@@ -6,7 +6,9 @@ about to update, and maintains a plan in a markdown file. A compact preview
 of the plan is shown live above the input box; **`Alt+O`** opens the full
 plan in a full-screen editor so you can scroll through, read, and edit the
 entire thing. `/plan go` hands the plan to the agent with full tool access
-to execute it.
+to execute it. Execution progress is tracked with **todos** (the `todo`
+tool from `pi-agent-extensions`): each checklist step in the plan becomes
+a todo, and the plan file itself is left untouched while executing.
 
 The plan file is **never deleted** when you exit or re-enter plan mode. It
 is only replaced by an explicit, user-confirmed reset (`/plan clear` or the
@@ -67,6 +69,21 @@ Caveats:
 | GitHub URL | Copy (clone, pinned) | `pi update --extensions` | everyone else, pinned releases |
 | Local path | Live reference | `git pull` + `/reload` | the author, offline dev |
 
+### Dependencies
+
+Execution progress is tracked with the `todo` tool from
+[`pi-agent-extensions`](https://pi.dev/packages/pi-agent-extensions)
+(adapted from [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff)).
+Install it once:
+
+```bash
+pi install pi-agent-extensions
+```
+
+Unlike `web_search` (which has a built-in fallback), this is a **hard
+dependency**: `/plan go` refuses to run without it, and `/plan status`
+reports whether it is available.
+
 ### Manual copy (offline fallback)
 
 Copy this directory into your project's `.pi/extensions/`:
@@ -123,6 +140,9 @@ Only these tools are active while planning:
 Everything else is removed from the active tool set, and the gates block
 any `bash`/`edit`/`write` call that violates the rules even if it slips
 through.
+
+The `todo` tool is intentionally **not** available in plan mode — tasks
+are created from the plan's checklist steps when you run `/plan go`.
 
 ### Safe bash allowlist
 
@@ -181,8 +201,32 @@ of pi's configured `deepseek` provider (`/login deepseek`). Run
   template the first time you enter plan mode.
 - Persists across sessions and across `/plan` on/off toggles. It is never
   deleted implicitly.
-- The agent marks checklist steps (`[ ]` → `[x]`) in the plan file while
-  executing (`/plan go`), if the plan uses checklists.
+- While executing (`/plan go`), the plan file is **not** edited — each
+  checklist step becomes a todo (`.pi/todos/`) and progress is tracked
+there instead.
+
+## Execution tracking with todos
+
+`/plan go` hands the plan to the agent with full tool access. Instead of
+editing the plan file's checkboxes during execution, the agent tracks
+progress with the `todo` tool (requires
+[`pi-agent-extensions`](https://pi.dev/packages/pi-agent-extensions)):
+
+1. On `/plan go`, the agent lists existing todos (`todo list-all`) and
+   reuses the ones tagged `plan` from a previous run — updating titles of
+   changed steps and deleting stale entries, so re-executing a plan does
+   not duplicate tasks.
+2. It creates one todo per checklist step (`- [ ]`) in the plan file —
+   title = the step, body = relevant context from the plan, tag = `plan`.
+   Plans without a checklist are broken into logical steps.
+3. As it works, it claims each todo before starting, appends brief notes
+   on what was done, and closes it when finished.
+4. The plan file is left untouched — todos are the source of truth for
+   step state. Check progress anytime with `/todos` (interactive list) or
+   `todo list-all`.
+
+If the todos extension is missing, `/plan go` shows a warning and does not
+start execution.
 
 ## Display
 

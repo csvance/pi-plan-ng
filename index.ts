@@ -10,6 +10,9 @@
  * changes back to the plan file.
  *
  * `/plan go` exits plan mode and executes the plan with full tool access.
+ * Execution progress is tracked with todos (the `todo` tool from
+ * pi-agent-extensions): each plan step becomes a todo tagged `plan`, and
+ * the plan file itself is not edited while executing.
  * `/plan clear` resets the plan file (with confirmation).
  * The plan file is never deleted on exit/re-entry; only an explicit,
  * user-confirmed reset replaces it.
@@ -57,6 +60,15 @@ export default function (pi: ExtensionAPI): void {
     const available = new Set(pi.getAllTools().map((t) => t.name));
     if (available.has("web_search")) tools.push("web_search");
     return tools;
+  }
+
+  /**
+   * True when the `todo` tool (pi-agent-extensions) is available.
+   * `/plan go` hard-requires it: todos track execution progress instead of
+   * editing checkboxes in the plan file.
+   */
+  function hasTodoTool(): boolean {
+    return pi.getAllTools().some((t) => t.name === "todo");
   }
 
   pi.registerFlag("plan", {
@@ -141,7 +153,16 @@ export default function (pi: ExtensionAPI): void {
       ensurePlanFile(ctx.cwd);
       enablePlanMode(ctx);
       const config = loadConfig(ctx.cwd);
-      ctx.ui.notify(`Plan mode on. Plan file: ${getPlanFilePath(ctx.cwd, config)}`, "info");
+      const todoOk = hasTodoTool();
+      ctx.ui.notify(
+        [
+          `Plan mode on. Plan file: ${getPlanFilePath(ctx.cwd, config)}`,
+          todoOk
+            ? "Execution will track progress with todos (pi-agent-extensions)."
+            : 'WARNING: the todos extension is not installed (`pi install pi-agent-extensions`) — /plan go will not run until it is.',
+        ].join("\n"),
+        todoOk ? "info" : "warning",
+      );
     }
   }
 
@@ -159,6 +180,13 @@ export default function (pi: ExtensionAPI): void {
       const action = (args ?? "").trim().toLowerCase();
 
       if (action === "go") {
+        if (!hasTodoTool()) {
+          ctx.ui.notify(
+            'Execution tracks progress with todos, but the todos extension is not installed. Install it with `pi install pi-agent-extensions`, then /reload.',
+            "warning",
+          );
+          return;
+        }
         const planFile = ensurePlanFile(ctx.cwd);
         let content = "";
         try {
@@ -179,14 +207,21 @@ export default function (pi: ExtensionAPI): void {
               "[EXECUTING PLAN]",
               "Full tool access has been restored. Execute the plan below, working through it step by step.",
               "",
-              `Plan file: ${planFile}`,
-              "If the plan uses checklists ([ ]), mark completed steps ([x]) in the plan file as you finish them.",
+              `Plan file: ${planFile} — the source of truth for WHAT to do.`,
+              "",
+              "TRACKING PROGRESS WITH TODOS:",
+              "- Call todo list-all first to see which todos already exist.",
+              '- If this plan was executed before, reuse the todos tagged "plan" that still match plan steps: update titles of changed steps (todo update) and delete stale ones (todo delete).',
+              '- Otherwise create one todo per step: todo create with title = the step text, body = relevant context from the plan, tags = ["plan"].',
+              "- Steps are the checklist items (- [ ]) in the plan file; if the plan has no checklist, break it into logical steps yourself.",
+              '- Claim a todo (todo claim) before starting it, close it when finished (todo update with status "closed"), and append brief notes on what was done (todo append).',
+              "- Do NOT edit the plan file while executing — todos are the source of truth for step state.",
               "",
               "--- PLAN ---",
               content.trim(),
               "--- END PLAN ---",
               "",
-              "Start with the first step. When the plan is complete, summarize what was done.",
+              "Start with the first step. When all todos are closed, summarize what was done.",
             ].join("\n"),
             display: true,
           },
@@ -227,6 +262,7 @@ export default function (pi: ExtensionAPI): void {
             `Plan mode: ${planModeEnabled ? "ON" : "OFF"}`,
             `Plan file: ${planFile}`,
             `Web search: ${config.apiKey ? "configured" : "not configured (set DEEPSEEK_API_KEY or \"apiKey\" in .pi/plan-mode.json)"}`,
+            `Todos: ${hasTodoTool() ? "available (pi-agent-extensions)" : "NOT installed — /plan go is disabled (`pi install pi-agent-extensions`)"}`,
           ].join("\n"),
           "info",
         );
@@ -545,6 +581,7 @@ export default function (pi: ExtensionAPI): void {
           "",
           "Guidelines:",
           "- Keep the plan actionable: goal, constraints/context, concrete steps.",
+          "- Structure the plan with concrete checklist steps (- [ ]): at execution time (/plan go) each step becomes a todo that tracks progress.",
           "- Research first (read files, web_search), then write.",
           "- If the user's request clearly starts an ENTIRELY NEW task unrelated to the current plan, call plan_clear (it asks the user to confirm) instead of editing the existing plan in place.",
           "- If the user asks you to do real work, remind them to run /plan go to execute the plan.",

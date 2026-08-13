@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `/plan go` now tracks execution progress with todos (the `todo` tool from
+  [`pi-agent-extensions`](https://pi.dev/packages/pi-agent-extensions))
+  instead of editing checkboxes in the plan file: on execution start the
+  agent creates one todo per plan step (tagged `plan`), reuses existing
+  plan todos across runs (updating/deleting stale entries), claims each
+  before starting, and closes it when done. The plan file is no longer
+  edited during execution — todos are the source of truth for step state.
+- The todos extension is now a hard dependency: `/plan go` refuses to run
+  without the `todo` tool, `/plan status` reports whether it is available,
+  and entering plan mode warns when it is missing.
+
 ## [0.1.0] - 2026-08-13
 
 Initial release of **Plan Mode (v2)** — a Claude Code-style planning extension
