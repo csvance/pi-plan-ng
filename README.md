@@ -28,21 +28,20 @@ reconciled by `pi update --extensions`). Restart pi or run `/reload`.
 ### From the local git repo (the author's dev machine)
 
 If you keep a checkout of this repo on disk (e.g.
-`/home/csvance/Git/pi-plan-ng/.pi/extensions/plan-mode`), you can point pi at
-it directly:
+`/home/csvance/Git/pi-plan-mode`), you can point pi at it directly:
 
 ```bash
 # global (all projects)
-pi install /home/csvance/Git/pi-plan-ng/.pi/extensions/plan-mode
+pi install /home/csvance/Git/pi-plan-mode
 # project-local (settings go in this project's .pi/)
-pi install /home/csvance/Git/pi-plan-ng/.pi/extensions/plan-mode -l
+pi install /home/csvance/Git/pi-plan-mode -l
 ```
 
 A local path is a **live reference, not a copy** — pi loads the extension
 straight from that directory. To update, just update the repo and reload:
 
 ```bash
-git -C /home/csvance/Git/pi-plan-ng/.pi/extensions/plan-mode pull
+git -C /home/csvance/Git/pi-plan-mode pull
 # then /reload in pi (or restart) — no re-install needed
 ```
 
@@ -50,15 +49,15 @@ git -C /home/csvance/Git/pi-plan-ng/.pi/extensions/plan-mode pull
 this workflow is `git pull` + `/reload`. To remove the local install:
 
 ```bash
-pi remove /home/csvance/Git/pi-plan-ng/.pi/extensions/plan-mode [-l]
+pi remove /home/csvance/Git/pi-plan-mode [-l]
 ```
 
 Caveats:
 
-- Don't install the local path inside `pi-plan-ng` itself — the extension is
-  already auto-discovered from `.pi/extensions/plan-mode/` there, and
-  installing it as a package too would register `plan`, `Alt+O`,
-  `web_search`, and `plan_clear` twice.
+- Don't also copy the repo into the same project's `.pi/extensions/` —
+  installing the local path *and* auto-discovering a copy would register
+  `plan`, `Alt+O`, `web_search`, and `plan_clear` twice. Pick one way per
+  project (install for shared dev; copy for throwaway experiments).
 - Keep the folder path stable; a local install breaks if the directory moves.
 - Prefer the GitHub install for other machines/people: it is a copy with
   pinned refs, updated via `pi update --extensions`.
@@ -251,7 +250,9 @@ execution, and a full-screen plan view. MIT licensed.
   planning instructions.
 - `plan_clear` (tool) and `/plan clear` (command) both ask for explicit
   user confirmation before replacing the plan file.
-- **Repository layout:** this repo is intentionally nested inside the
-  (non-git) `pi-plan-ng` project folder as `.pi/extensions/plan-mode/`, so
-  the extension auto-loads in that project. If `pi-plan-ng` ever becomes a
-  git repo itself, add this directory as a submodule or to its `.gitignore`.
+- **Repository layout:** this is a standalone repo — the package root is
+the repo root (`index.ts`, `utils.ts`, `package.json` at the top). It was
+developed in a scratch project's `.pi/extensions/plan-mode/` (pi's
+project-local auto-discovery location); to develop on it now, either clone
+it back into a project's `.pi/extensions/` or use the local-path install
+above in any project.
