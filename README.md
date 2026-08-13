@@ -315,6 +315,10 @@ Note: the extension imports `./utils.ts` with the `.ts` extension (pi loads
 TypeScript directly via jiti), so `tsconfig.json` uses
 `allowImportingTsExtensions` + `noEmit`.
 
+See also: [`AUDIT.md`](./AUDIT.md) (security review of the command gate)
+and [`WORKFLOWS.md`](./WORKFLOWS.md) (multi-agent workflow orchestration
+guidance).
+
 ## Publishing to GitHub
 
 The repo is already initialized (`main` branch, `v0.1.0` tag). To publish:
