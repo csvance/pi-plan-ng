@@ -213,6 +213,27 @@ Note: the extension imports `./utils.ts` with the `.ts` extension (pi loads
 TypeScript directly via jiti), so `tsconfig.json` uses
 `allowImportingTsExtensions` + `noEmit`.
 
+## Publishing to GitHub
+
+The repo is already initialized (`main` branch, `v0.1.0` tag). To publish:
+
+```bash
+# 1. authenticate once
+gh auth login
+
+# 2. replace the <your-username> placeholders in this README and in
+#    package.json (repository/bugs/homepage)
+
+# 3. create the (public) repo and push
+gh repo create pi-plan-mode --public --source=. --remote=origin --push
+
+# 4. set metadata
+gh repo edit --description "Claude Code-style plan mode for pi: PLAN.md workflow, DeepSeek web search, /plan go execution, full-screen plan view (Alt+O)" --add-topic pi-package
+```
+
+After that, anyone can install it with
+`pi install https://github.com/<your-username>/pi-plan-mode`.
+
 ## Credits
 
 A ground-up rewrite of the official
