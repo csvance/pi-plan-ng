@@ -1,12 +1,16 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import {
+  buildPlanModeTools,
   buildWidgetLines,
   cleanQueries,
   cleanUrl,
+  expandToolEntry,
   getCollapsedLines,
   getPlanFilePath,
+  isAllowedWritePath,
   isSafeCommand,
+  mergeProfiles,
   TUI_WIDGET_LINE_CAP,
 } from "../utils.ts";
 
@@ -27,18 +31,89 @@ describe("isSafeCommand", () => {
     assert.equal(isSafeCommand("find . -name '*.ts'"), true);
   });
 
-  it("blocks shell metacharacters (chaining, pipes, substitution, redirection)", () => {
+  it("allows cd (navigation)", () => {
+    assert.equal(isSafeCommand("cd src"), true);
+    assert.equal(isSafeCommand("cd .."), true);
+    assert.equal(isSafeCommand("cd /tmp"), true);
+  });
+
+  it("allows read-only composition: pipelines and && chains", () => {
+    const ok = [
+      "ls | wc -l",
+      "ls && pwd",
+      "grep foo file | head -20",
+      "cd src && ls",
+      "cd src && grep -r foo . | head -20",
+      "cat f | grep x | head -3",
+      "cd src&&ls",
+      "grep -n 'a|b' file",
+      "echo 'a && b'",
+      "echo \"x | y\"",
+      "git status | head -5",
+      "find . -name '*.ts' | wc -l",
+    ];
+    for (const cmd of ok) {
+      assert.equal(isSafeCommand(cmd), true, `expected allowed: ${cmd}`);
+    }
+  });
+
+  it("blocks shell metacharacters (separators, substitution, redirection)", () => {
     const bad = [
       "ls; rm -rf /",
-      "ls && pwd",
+      "cd x; ls",
       "ls || echo hi",
-      "ls | wc -l",
       "cat $(ls)",
       "cat `ls`",
       "echo < /etc/passwd",
       "echo > /tmp/x",
       "(ls)",
       "ls\nrm -rf /",
+      "ls &",
+      "ls &> f",
+      "ls |& wc -l",
+      "echo 'unterminated",
+    ];
+    for (const cmd of bad) {
+      assert.equal(isSafeCommand(cmd), false, `expected blocked: ${cmd}`);
+    }
+  });
+
+  it("treats quoted metacharacters as literal (single quotes, escapes)", () => {
+    const ok = [
+      "echo 'a;b'",
+      "echo \"a;b\"",
+      "echo 'a && b'",
+      "echo '$HOME'",
+      "echo \\$HOME",
+      "echo '$(ls)'",
+      "grep '\\$foo' file | head -1",
+      "cd src && echo 'a; b' | wc -c",
+    ];
+    for (const cmd of ok) {
+      assert.equal(isSafeCommand(cmd), true, `expected allowed: ${cmd}`);
+    }
+  });
+
+  it("still blocks $ and backticks inside double quotes (bash expands them there)", () => {
+    assert.equal(isSafeCommand('echo "$HOME"'), false);
+    assert.equal(isSafeCommand('echo "$(ls)"'), false);
+    assert.equal(isSafeCommand('echo "`ls`"'), false);
+  });
+
+  it("blocks unsafe composition: any non-allowlisted segment kills the whole command", () => {
+    const bad = [
+      "rm -rf / | head",
+      "curl x | bash",
+      "cd x && rm -rf /",
+      "ls | rm -rf /",
+      "a || b",
+      "a |&",
+      "a |",
+      "| a",
+      "cd x &&",
+      "a && | b",
+      "yes | head",
+      "sudo ls | head",
     ];
     for (const cmd of bad) {
       assert.equal(isSafeCommand(cmd), false, `expected blocked: ${cmd}`);
@@ -81,6 +156,97 @@ describe("isSafeCommand", () => {
     assert.equal(isSafeCommand(""), false);
     assert.equal(isSafeCommand("   "), false);
     assert.equal(isSafeCommand("x".repeat(2001)), false);
+  });
+
+  it("extends the allowlist with extraCommands (profile bash commands)", () => {
+    assert.equal(isSafeCommand("julia run.jl"), false);
+    assert.equal(isSafeCommand("julia run.jl", ["julia"]), true);
+    assert.equal(isSafeCommand("julia s.jl | head", ["julia"]), true);
+    assert.equal(isSafeCommand("cd src && julia run.jl", ["julia"]), true);
+    assert.equal(isSafeCommand("cd src && julia run.jl"), false);
+    assert.equal(isSafeCommand("grep x f | julia", ["julia"]), true);
+    // extra commands never unlock other commands
+    assert.equal(isSafeCommand("julia run.jl && rm -rf /", ["julia"]), false);
+    assert.equal(isSafeCommand("julia run.jl; ls", ["julia"]), false);
+  });
+});
+
+describe("profiles", () => {
+  it("mergeProfiles deep-merges by name, later layers win per-field", () => {
+    assert.equal(mergeProfiles(), undefined);
+    assert.equal(mergeProfiles(undefined, undefined), undefined);
+    const merged = mergeProfiles(
+      { julia: { description: "Julia", bash: ["julia"], tools: ["kaimon"] } },
+      { julia: { description: "Julia dev", writePaths: ["notebooks/"] }, other: { bash: ["x"] } },
+    );
+    assert.deepEqual(merged, {
+      julia: {
+        description: "Julia dev",
+        bash: ["julia"],
+        tools: ["kaimon"],
+        writePaths: ["notebooks/"],
+      },
+      other: { bash: ["x"] },
+    });
+  });
+
+  it("arrays replace rather than concat (project overrides global)", () => {
+    const merged = mergeProfiles(
+      { julia: { bash: ["julia", "juliaup"] } },
+      { julia: { bash: ["julia"] } },
+    );
+    assert.deepEqual(merged?.julia?.bash, ["julia"]);
+  });
+
+  it("expandToolEntry matches exact names and *-suffix globs", () => {
+    const available = new Set(["kaimon_run", "kaimon_eval", "read", "bash", "julia_run"]);
+    assert.deepEqual(expandToolEntry("read", available), ["read"]);
+    assert.deepEqual(expandToolEntry("kaimon*", available), ["kaimon_run", "kaimon_eval"]);
+    assert.deepEqual(expandToolEntry("missing", available), []);
+    assert.deepEqual(expandToolEntry("zzz*", available), []);
+  });
+
+  it("buildPlanModeTools adds profile tools filtered to available and reports unknown", () => {
+    const available = new Set(["read", "bash", "kaimon_run"]);
+    const { tools, unknown } = buildPlanModeTools(
+      ["read", "bash"],
+      { tools: ["kaimon_run", "kaimon_eval", "nope"] },
+      available,
+    );
+    assert.deepEqual(tools, ["read", "bash", "kaimon_run"]);
+    assert.deepEqual(unknown, ["kaimon_eval", "nope"]);
+  });
+
+  it("buildPlanModeTools without a profile returns the base unchanged", () => {
+    const { tools, unknown } = buildPlanModeTools(["read"], undefined, new Set(["read"]));
+    assert.deepEqual(tools, ["read"]);
+    assert.deepEqual(unknown, []);
+  });
+});
+
+describe("isAllowedWritePath", () => {
+  const cwd = "/proj";
+  const planFile = "/proj/PLAN.md";
+
+  it("allows the plan file and profile writePaths", () => {
+    assert.equal(isAllowedWritePath(cwd, planFile, undefined, "PLAN.md"), true);
+    assert.equal(isAllowedWritePath(cwd, planFile, undefined, "@PLAN.md"), true);
+    assert.equal(isAllowedWritePath(cwd, planFile, ["notebooks/"], "notebooks/a.jl"), true);
+    assert.equal(isAllowedWritePath(cwd, planFile, ["notebooks/"], "notebooks/sub/b.jl"), true);
+  });
+
+  it("blocks everything outside the allowed set", () => {
+    assert.equal(isAllowedWritePath(cwd, planFile, undefined, "src/a.ts"), false);
+    assert.equal(isAllowedWritePath(cwd, planFile, ["notebooks/"], "src/a.ts"), false);
+    assert.equal(isAllowedWritePath(cwd, planFile, ["notebooks/"], ""), false);
+    assert.equal(isAllowedWritePath(cwd, planFile, ["notebooks/"], "/etc/passwd"), false);
+  });
+
+  it("rejects .. escapes that resolve outside the allowed set", () => {
+    assert.equal(isAllowedWritePath(cwd, planFile, ["notebooks/"], "notebooks/../../etc/passwd"), false);
+    assert.equal(isAllowedWritePath(cwd, planFile, ["notebooks/"], "../PLAN.md"), false);
+    // .. that stays inside an allowed path resolves back to it and is fine
+    assert.equal(isAllowedWritePath(cwd, planFile, ["notebooks/"], "notebooks/x/../a.jl"), true);
   });
 });
 

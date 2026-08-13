@@ -1,10 +1,18 @@
 {
-  "$comment": "Plan mode config. Copy to .pi/plan-mode.json (project) or ~/.pi/agent/plan-mode.json (global). Env vars DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL override everything.",
+  "$comment": "Plan mode config. Copy to .pi/plan-mode.json (project) or ~/.pi/agent/plan-mode.json (global). Env vars DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL override everything. Profiles deep-merge by name (global → project).",
   "apiKey": "sk-...",
   "baseUrl": "https://api.deepseek.com",
   "model": "deepseek-v4-flash",
   "reasoningEffort": "low",
   "searchTimeoutMs": 30000,
   "planFile": "PLAN.md",
-  "collapsedLines": 5
+  "collapsedLines": 5,
+  "profiles": {
+    "julia": {
+      "description": "Planning with Julia script execution",
+      "tools": [],
+      "bash": ["julia"],
+      "writePaths": []
+    }
+  }
 }

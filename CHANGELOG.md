@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Profiles**: user-defined plan-mode profiles in the config (`profiles`
+  in `plan-mode.json`, global → project deep-merge by name). `/plan
+  <name>` enters/switches plan mode with a profile that extends the
+  allowlist: extra tools (exact names or `*`-suffix globs, e.g. MCP
+  tools), extra bare bash commands, and extra `writePaths` (edit/write
+  directories besides the plan file). Unknown tools are warned about and
+  ignored; unknown profiles are rejected with a list of available ones.
+  `/plan status` shows the active profile; completions include profile
+  names; `pi --plan-profile <name>` starts pi in plan mode with a
+  profile; the active profile survives `/reload` and session resume and
+  is shown in the footer status and gate messages.
+- **Read-only bash composition**: pipelines (`grep -r foo . | head -20`)
+  and `&&` chains (`cd src && ls`) are now allowed — every segment must
+  independently pass the allowlist checks, so no non-allowlisted command
+  can ever run. `;`, `||`, backgrounding `&`, and empty segments stay
+  blocked; quoted pipes/operators are literal. `cd` joins the default
+  safe command list.
+
 ### Changed
 
 - `/plan go` now tracks execution progress with todos (the `todo` tool from

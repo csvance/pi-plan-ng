@@ -13,26 +13,32 @@
  * Execution progress is tracked with todos (the `todo` tool from
  * pi-agent-extensions): each plan step becomes a todo tagged `plan`, and
  * the plan file itself is not edited while executing.
+ * `/plan <profile>` enters plan mode with a user-defined profile that
+ * extends the allowlist (extra tools, bash commands, write paths) — see
+ * the "profiles" key in the plan-mode config.
  * `/plan clear` resets the plan file (with confirmation).
  * The plan file is never deleted on exit/re-entry; only an explicit,
  * user-confirmed reset replaces it.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import {
   buildWidgetLines,
+  buildPlanModeTools,
   deepseekSearch,
   getCollapsedLines,
   getPlanFilePath,
   isAbort,
+  isAllowedWritePath,
   isSafeCommand,
   loadConfig,
   PLAN_TEMPLATE,
   type DeepSeekSearchResult,
+  type PlanModeProfile,
 } from "./utils.ts";
 
 /**
@@ -48,17 +54,27 @@ const TOGGLE_KEY = "Alt+O";
 interface PlanModeState {
   enabled: boolean;
   toolsBeforePlanMode?: string[];
+  /** Active profile name (undefined = default, no profile). */
+  profile?: string;
 }
 
 export default function (pi: ExtensionAPI): void {
   let planModeEnabled = false;
   let toolsBeforePlanMode: string[] | undefined;
   let searchToolRegisteredByUs = false;
+  let activeProfileName: string | undefined;
+  let activeProfile: PlanModeProfile | undefined;
+
+  /** Gate label used in block reasons and status, e.g. "plan mode (julia)". */
+  function modeLabel(): string {
+    return activeProfileName ? `plan mode (${activeProfileName})` : "plan mode";
+  }
 
   function planModeTools(): string[] {
-    const tools = ["read", "grep", "find", "ls", "bash", "edit", "write", "plan_clear"];
+    const base = ["read", "grep", "find", "ls", "bash", "edit", "write", "plan_clear"];
     const available = new Set(pi.getAllTools().map((t) => t.name));
-    if (available.has("web_search")) tools.push("web_search");
+    if (available.has("web_search")) base.push("web_search");
+    const { tools } = buildPlanModeTools(base, activeProfile, available);
     return tools;
   }
 
@@ -77,6 +93,12 @@ export default function (pi: ExtensionAPI): void {
     default: false,
   });
 
+  pi.registerFlag("plan-profile", {
+    description: "Start in plan mode with the named profile (see /plan status)",
+    type: "string",
+    default: "",
+  });
+
   /* ---------------------------------------------------------------- */
   /* Helpers                                                           */
   /* ---------------------------------------------------------------- */
@@ -85,13 +107,14 @@ export default function (pi: ExtensionAPI): void {
     pi.appendEntry(STATE_CUSTOM_TYPE, {
       enabled: planModeEnabled,
       toolsBeforePlanMode,
+      profile: activeProfileName,
     } satisfies PlanModeState);
   }
 
   function updateStatus(ctx: ExtensionContext): void {
     ctx.ui.setStatus(
       "plan-mode",
-      planModeEnabled ? ctx.ui.theme.fg("warning", "⏸ plan") : undefined,
+      planModeEnabled ? ctx.ui.theme.fg("warning", `⏸ plan${activeProfileName ? `·${activeProfileName}` : ""}`) : undefined,
     );
   }
 
@@ -126,18 +149,66 @@ export default function (pi: ExtensionAPI): void {
     );
   }
 
-  function enablePlanMode(ctx: ExtensionContext): void {
+  /**
+   * Resolve a profile by name (case-insensitive) from the merged config
+   * (global → project). Returns the canonical config key too, so
+   * `activeProfileName` always matches the config exactly.
+   */
+  function resolveProfile(
+    ctx: ExtensionContext,
+    name: string | undefined,
+  ): { canonicalName: string | undefined; profile: PlanModeProfile | undefined } {
+    if (!name) return { canonicalName: undefined, profile: undefined };
+    const profiles = loadConfig(ctx.cwd).profiles ?? {};
+    if (profiles[name]) return { canonicalName: name, profile: profiles[name] };
+    const key = Object.keys(profiles).find((k) => k.toLowerCase() === name.toLowerCase());
+    return key
+      ? { canonicalName: key, profile: profiles[key] }
+      : { canonicalName: undefined, profile: undefined };
+  }
+
+  /** Warn once per unknown profile tool entry (does not block activation). */
+  function warnUnknownProfileTools(
+    ctx: ExtensionContext,
+    profileName: string | undefined,
+    profile: PlanModeProfile | undefined,
+  ): void {
+    if (!profile?.tools || profile.tools.length === 0) return;
+    const available = new Set(pi.getAllTools().map((t) => t.name));
+    const { unknown } = buildPlanModeTools([], profile, available);
+    for (const u of unknown) {
+      ctx.ui.notify(
+        `[plan mode] Profile "${profileName}" references unknown tool "${u}" — ignored.`,
+        "warning",
+      );
+    }
+  }
+
+  /**
+   * Enter plan mode, optionally with a named profile. Returns false (and
+   * leaves plan mode off) when the profile is unknown. Warns about profile
+   * tools that do not exist in the current tool set.
+   */
+  function enablePlanMode(ctx: ExtensionContext, profileName?: string): boolean {
+    const { canonicalName, profile } = resolveProfile(ctx, profileName);
+    if (profileName && !profile) return false;
     ensureSearchTool();
     if (toolsBeforePlanMode === undefined) toolsBeforePlanMode = pi.getActiveTools();
+    activeProfileName = canonicalName;
+    activeProfile = profile;
+    warnUnknownProfileTools(ctx, canonicalName, profile);
     pi.setActiveTools(planModeTools());
     planModeEnabled = true;
     persistState();
     updateStatus(ctx);
     refreshPlanWidget(ctx);
+    return true;
   }
 
   function disablePlanMode(ctx: ExtensionContext): void {
     planModeEnabled = false;
+    activeProfileName = undefined;
+    activeProfile = undefined;
     pi.setActiveTools(toolsBeforePlanMode ?? pi.getActiveTools());
     toolsBeforePlanMode = undefined;
     ctx.ui.setWidget("plan-mode", undefined);
@@ -171,11 +242,15 @@ export default function (pi: ExtensionAPI): void {
   /* ---------------------------------------------------------------- */
 
   pi.registerCommand("plan", {
-    description: "Toggle plan mode. Subcommands: go (execute plan), clear (reset plan), status",
-    getArgumentCompletions: (prefix: string) =>
-      ["go", "clear", "status", "open"]
+    description:
+      "Toggle plan mode. Subcommands: go (execute plan), clear (reset plan), status, open. A profile name enters plan mode with that profile.",
+    getArgumentCompletions: (prefix: string) => {
+      const builtins = ["go", "clear", "status", "open"];
+      const profiles = Object.keys(loadConfig(process.cwd()).profiles ?? {});
+      return [...builtins, ...profiles]
         .filter((a) => a.startsWith(prefix))
-        .map((a) => ({ value: a, label: a })),
+        .map((a) => ({ value: a, label: a }));
+    },
     handler: async (args, ctx) => {
       const action = (args ?? "").trim().toLowerCase();
 
@@ -257,9 +332,13 @@ export default function (pi: ExtensionAPI): void {
       if (action === "status") {
         const config = loadConfig(ctx.cwd);
         const planFile = getPlanFilePath(ctx.cwd, config);
+        const profileNames = Object.keys(config.profiles ?? {});
+        const activeDesc = activeProfile?.description ? ` — ${activeProfile.description}` : "";
         ctx.ui.notify(
           [
             `Plan mode: ${planModeEnabled ? "ON" : "OFF"}`,
+            `Profile: ${activeProfileName ?? "none (default)"}${activeDesc}`,
+            `Available profiles: ${profileNames.length > 0 ? profileNames.join(", ") : "(none)"}`,
             `Plan file: ${planFile}`,
             `Web search: ${config.apiKey ? "configured" : "not configured (set DEEPSEEK_API_KEY or \"apiKey\" in .pi/plan-mode.json)"}`,
             `Todos: ${hasTodoTool() ? "available (pi-agent-extensions)" : "NOT installed — /plan go is disabled (`pi install pi-agent-extensions`)"}`,
@@ -271,6 +350,38 @@ export default function (pi: ExtensionAPI): void {
 
       if (action === "open") {
         await openPlanView(ctx);
+        return;
+      }
+
+      // A non-empty argument that is not a built-in subcommand: enter plan
+      // mode with that profile (or switch profile if already in plan mode).
+      if (action !== "") {
+        const { canonicalName, profile } = resolveProfile(ctx, action);
+        if (!profile) {
+          const names = Object.keys(loadConfig(ctx.cwd).profiles ?? {});
+          ctx.ui.notify(
+            [
+              `Unknown profile: "${action}".`,
+              `Available profiles: ${names.length > 0 ? names.join(", ") : "(none configured)"}`,
+              "Define profiles in .pi/plan-mode.json (project) or ~/.pi/agent/plan-mode.json (global).",
+            ].join("\n"),
+            "warning",
+          );
+          return;
+        }
+        ensurePlanFile(ctx.cwd);
+        const wasOn = planModeEnabled;
+        const ok = enablePlanMode(ctx, canonicalName);
+        if (!ok) {
+          ctx.ui.notify(`Could not activate profile "${action}".`, "warning");
+          return;
+        }
+        ctx.ui.notify(
+          wasOn
+            ? `Switched to profile "${canonicalName}" (${profile.description ?? "no description"}).`
+            : `Plan mode on with profile "${canonicalName}" (${profile.description ?? "no description"}).`,
+          "info",
+        );
         return;
       }
 
@@ -494,6 +605,7 @@ export default function (pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     if (!planModeEnabled) return;
+    const label = modeLabel();
 
     // Catch-all: only plan-mode tools may be called (defense-in-depth for
     // resumed sessions or models that somehow reference inactive tools).
@@ -501,18 +613,18 @@ export default function (pi: ExtensionAPI): void {
       return {
         block: true,
         reason:
-          `[plan mode] Tool "${event.toolName}" is not available in plan mode. ` +
-          `Only read/grep/find/ls, web_search, read-only bash, and edits to the plan file are allowed.\n` +
+          `[${label}] Tool "${event.toolName}" is not available in plan mode. ` +
+          `Only read/grep/find/ls, web_search, read-only bash${activeProfile ? ", and profile tools" : ""}, and edits to the plan file are allowed.\n` +
           `Run /plan to leave plan mode, or /plan go to execute the plan with full access.`,
       };
     }
 
     if (isToolCallEventType("bash", event)) {
-      if (!isSafeCommand(event.input.command)) {
+      if (!isSafeCommand(event.input.command, activeProfile?.bash)) {
         return {
           block: true,
           reason:
-            `[plan mode] Command blocked — plan mode only allows read-only commands.\n` +
+            `[${label}] Command blocked — plan mode only allows read-only commands (and profile-approved commands).\n` +
             `Blocked: ${event.input.command}\n` +
             `Run /plan to leave plan mode, or /plan go to execute the plan with full access.`,
         };
@@ -521,14 +633,13 @@ export default function (pi: ExtensionAPI): void {
     }
 
     if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
-      const rawPath = event.input.path;
-      const resolved = resolve(ctx.cwd, String(rawPath ?? "").replace(/^@/, ""));
+      const rawPath = String(event.input.path ?? "");
       const planFile = getPlanFilePath(ctx.cwd, loadConfig(ctx.cwd));
-      if (resolved !== planFile) {
+      if (!isAllowedWritePath(ctx.cwd, planFile, activeProfile?.writePaths, rawPath)) {
         return {
           block: true,
           reason:
-            `[plan mode] Writes are restricted to the plan file (${planFile}) in plan mode.\n` +
+            `[${label}] Writes are restricted to the plan file (${planFile})${activeProfile?.writePaths ? ` and profile writePaths` : ""} in plan mode.\n` +
             `Blocked: ${rawPath}\n` +
             `Run /plan to leave plan mode, or /plan go to execute the plan with full access.`,
         };
@@ -566,6 +677,9 @@ export default function (pi: ExtensionAPI): void {
           "You are in PLAN MODE: you research and write a plan; you do NOT implement anything.",
           "",
           `Plan file: ${planFile} — the source of truth. The UI shows a compact preview live; ${TOGGLE_KEY} opens the full plan in an editor (view/scroll/edit).`,
+          ...(activeProfileName
+            ? [`Profile: ${activeProfileName}${activeProfile?.description ? ` — ${activeProfile.description}` : ""}. Its extra tools, bash commands, and write paths are allowed in addition to the defaults.`]
+            : []),
           "",
           "Available tools:",
           "- read, grep, find, ls — explore the codebase",
@@ -618,11 +732,29 @@ export default function (pi: ExtensionAPI): void {
     if (last?.data) {
       planModeEnabled = last.data.enabled ?? false;
       toolsBeforePlanMode = last.data.toolsBeforePlanMode;
+      activeProfileName = last.data.profile;
     }
 
+    // Startup flags: --plan (boolean, plain plan mode) and
+    // --plan-profile <name> (plan mode with a profile).
     if (pi.getFlag("plan") === true) planModeEnabled = true;
+    const profileFlag = pi.getFlag("plan-profile");
+    if (typeof profileFlag === "string" && profileFlag !== "") {
+      planModeEnabled = true;
+      activeProfileName = profileFlag;
+    }
 
     if (planModeEnabled) {
+      const { canonicalName, profile } = resolveProfile(ctx, activeProfileName);
+      if (activeProfileName && !profile) {
+        ctx.ui.notify(
+          `[plan mode] Unknown profile "${activeProfileName}" — starting plan mode without a profile.`,
+          "warning",
+        );
+      }
+      activeProfileName = canonicalName;
+      activeProfile = profile;
+      warnUnknownProfileTools(ctx, canonicalName, profile);
       ensureSearchTool();
       if (toolsBeforePlanMode === undefined) toolsBeforePlanMode = pi.getActiveTools();
       pi.setActiveTools(planModeTools());

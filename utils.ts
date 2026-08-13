@@ -24,6 +24,8 @@ const SAFE_COMMANDS = new Set([
   "sort", "uniq", "cut", "tr", "comm", "join", "paste", "column", "od", "hexdump",
   "xxd", "strings", "sha256sum", "md5sum", "jq", "yq", "bat", "less", "more",
   "diff", "cmp",
+  // navigation (only useful chained via &&; does not persist across calls)
+  "cd",
   // process & environment info (read-only)
   "pwd", "which", "whoami", "echo", "printf", "printenv", "date", "uptime", "uname",
   "id", "hostname", "ps", "type",
@@ -39,21 +41,90 @@ const SAFE_GIT_SUBCOMMANDS = new Set([
 /** `find` flags that mutate the filesystem or execute commands. */
 const FIND_DANGEROUS = /^-?(exec|execdir|ok|okdir|delete|fprint|fprint0|fls|fprintf)/;
 
-/**
- * Shell metacharacters that are never allowed in plan-mode commands:
- * chaining (`;` `&&` `||`), pipes (`|`), command substitution (`$`, backticks),
- * redirection (`<` `>`), subshells/parens, and newline-based chaining.
- *
- * Quotes and backslashes are allowed so common read patterns still work
- * (`grep 'foo bar'`, `find . -name "*.ts"`). They cannot smuggle a separator
- * in, because every real separator/metacharacter above is rejected outright.
- */
-const FORBIDDEN = /[;&|`$<>()\r\n\x00]/;
+/** Control characters never allowed anywhere in a plan-mode command. */
+const FORBIDDEN_ALWAYS = /[\r\n\x00]/;
 
-export function isSafeCommand(command: string): boolean {
-  const trimmed = command.trim();
+/**
+ * Scan a command and split it on *unquoted* `&&` operators and `|`
+ * pipelines, rejecting metacharacters where bash would interpret them:
+ * unquoted `;` `$` backtick `<` `>` `(` `)`; `$` and backticks also
+ * inside double quotes (bash still expands them there); a lone `&`
+ * (backgrounding, `|&`, `&>`); `||`; and unterminated quotes.
+ * Single-quoted text is fully literal (backslashes included).
+ * Returns null when the command must be rejected.
+ */
+function splitComposition(command: string): string[] | null {
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote === "'") {
+      // single quotes: everything is literal
+      current += ch;
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      // double quotes: $ and backticks are still active in bash
+      if (ch === "$" || ch === "`") return null;
+      current += ch;
+      if (ch === "\\") {
+        // escaped char is literal; consume it too
+        if (i + 1 < command.length) {
+          current += command[i + 1];
+          i++;
+        }
+        continue;
+      }
+      if (ch === '"') quote = null;
+      continue;
+    }
+    // unquoted
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "\\") {
+      // backslash escapes the next char (it is literal, whatever it is)
+      current += ch;
+      if (i + 1 < command.length) {
+        current += command[i + 1];
+        i++;
+      }
+      continue;
+    }
+    if (ch === ";" || ch === "$" || ch === "`" || ch === "<" || ch === ">" || ch === "(" || ch === ")") {
+      return null;
+    }
+    if (ch === "&") {
+      if (command[i + 1] === "&") {
+        segments.push(current);
+        current = "";
+        i++;
+        continue;
+      }
+      return null; // lone &: backgrounding, |&, &>
+    }
+    if (ch === "|") {
+      const next = command[i + 1];
+      if (next === "|" || next === "&") return null; // || or |&
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (quote !== null) return null; // unterminated quote — fail closed
+  segments.push(current);
+  return segments;
+}
+
+/** Validate a single (already split) command segment: bare allowlisted head only. */
+function isSafeSegment(segment: string, allowed: ReadonlySet<string>): boolean {
+  const trimmed = segment.trim();
   if (!trimmed || trimmed.length > 2000) return false;
-  if (FORBIDDEN.test(trimmed)) return false;
   const words = trimmed.split(/\s+/);
   const head = words[0] ?? "";
   if (head === "git") {
@@ -62,12 +133,44 @@ export function isSafeCommand(command: string): boolean {
   if (head === "find") {
     return words.slice(1).every((w) => !FIND_DANGEROUS.test(w));
   }
-  return SAFE_COMMANDS.has(head);
+  return allowed.has(head);
+}
+
+/**
+ * A command is safe iff every segment of its composition (`a | b`,
+ * `a && b`, or any mix) passes the standalone checks — bare allowlisted
+ * head, no interpretable metacharacters, no `find` write/exec flags.
+ * `;`, `||`, backgrounding `&`, and empty segments are always rejected;
+ * quoted text is literal (except `$`/backticks in double quotes).
+ * `extraCommands` extends the allowlist (profile bash commands).
+ */
+export function isSafeCommand(command: string, extraCommands?: Iterable<string>): boolean {
+  const trimmed = command.trim();
+  if (!trimmed || trimmed.length > 2000) return false;
+  if (FORBIDDEN_ALWAYS.test(trimmed)) return false;
+  const segments = splitComposition(trimmed);
+  if (!segments || segments.length === 0) return false;
+  if (segments.some((s) => s.trim() === "")) return false;
+  const allowed = extraCommands
+    ? new Set([...SAFE_COMMANDS, ...extraCommands])
+    : SAFE_COMMANDS;
+  return segments.every((s) => isSafeSegment(s, allowed));
 }
 
 /* ------------------------------------------------------------------ */
 /* Config                                                              */
 /* ------------------------------------------------------------------ */
+
+export interface PlanModeProfile {
+  /** Short description shown in /plan completions and status. */
+  description?: string;
+  /** Extra tool names allowed in plan mode (MCP or extension tools). Exact names or `*`-suffix globs. */
+  tools?: string[];
+  /** Extra bare bash command names allowed through the gate (e.g. "julia"). */
+  bash?: string[];
+  /** Extra paths allowed for edit/write besides the plan file (relative to project root). */
+  writePaths?: string[];
+}
 
 export interface PlanModeConfig {
   /** DeepSeek API key for web search. Falls back to DEEPSEEK_API_KEY, then the `deepseek` provider's key. */
@@ -84,22 +187,44 @@ export interface PlanModeConfig {
   searchTimeoutMs?: number;
   /** DeepSeek reasoning effort for searches: "off" | "low" | "high". Default: "low" */
   reasoningEffort?: "off" | "low" | "high";
+  /** User-defined plan-mode profiles (deep-merged by name: global → project). */
+  profiles?: Record<string, PlanModeProfile>;
 }
 
 const CONFIG_FILE = "plan-mode.json";
 
+/** Merge profile maps by name (later layers win per-field; arrays replace). */
+export function mergeProfiles(
+  ...layers: Array<Record<string, PlanModeProfile> | undefined>
+): Record<string, PlanModeProfile> | undefined {
+  const merged: Record<string, PlanModeProfile> = {};
+  let any = false;
+  for (const layer of layers) {
+    if (!layer) continue;
+    any = true;
+    for (const [name, profile] of Object.entries(layer)) {
+      merged[name] = { ...merged[name], ...profile };
+    }
+  }
+  return any ? merged : undefined;
+}
+
 /** env -> global config (~/.pi/agent/plan-mode.json) -> project config (.pi/plan-mode.json) */
 export function loadConfig(cwd: string): PlanModeConfig {
   const merged: PlanModeConfig = {};
+  const profiles: Array<Record<string, PlanModeProfile>> = [];
   const paths = [join(getAgentDir(), CONFIG_FILE), join(cwd, CONFIG_DIR_NAME, CONFIG_FILE)];
   for (const p of paths) {
     if (!existsSync(p)) continue;
     try {
-      Object.assign(merged, JSON.parse(readFileSync(p, "utf8")));
+      const parsed = JSON.parse(readFileSync(p, "utf8")) as PlanModeConfig;
+      Object.assign(merged, parsed);
+      if (parsed.profiles) profiles.push(parsed.profiles);
     } catch (e) {
       console.error(`[plan-mode] Could not parse ${p}: ${e instanceof Error ? e.message : e}`);
     }
   }
+  merged.profiles = mergeProfiles(...profiles);
   if (process.env.DEEPSEEK_API_KEY) merged.apiKey = process.env.DEEPSEEK_API_KEY;
   if (process.env.DEEPSEEK_BASE_URL) merged.baseUrl = process.env.DEEPSEEK_BASE_URL;
   if (process.env.DEEPSEEK_MODEL) merged.model = process.env.DEEPSEEK_MODEL;
@@ -111,12 +236,76 @@ export function getCollapsedLines(config: PlanModeConfig): number {
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 5;
 }
 
+/**
+ * Expand a profile `tools` entry to concrete tool names. Supports exact
+ * names and `*`-suffix globs (e.g. "kaimon*"). Returns [] when nothing
+ * matches — the caller reports the entry as unknown.
+ */
+export function expandToolEntry(entry: string, available: ReadonlySet<string>): string[] {
+  if (entry.endsWith("*")) {
+    const prefix = entry.slice(0, -1);
+    return [...available].filter((n) => n.startsWith(prefix));
+  }
+  return available.has(entry) ? [entry] : [];
+}
+
+/**
+ * Build the effective plan-mode tool allowlist: base tools + profile tools
+ * (filtered to the available ones). Returns the unknown/unmatched entries
+ * so the caller can warn about them at profile activation.
+ */
+export function buildPlanModeTools(
+  base: readonly string[],
+  profile: PlanModeProfile | undefined,
+  available: ReadonlySet<string>,
+): { tools: string[]; unknown: string[] } {
+  const tools = [...base];
+  const unknown: string[] = [];
+  if (profile?.tools) {
+    for (const entry of profile.tools) {
+      const matches = expandToolEntry(entry, available);
+      if (matches.length === 0) {
+        unknown.push(entry);
+        continue;
+      }
+      for (const m of matches) {
+        if (!tools.includes(m)) tools.push(m);
+      }
+    }
+  }
+  return { tools, unknown };
+}
+
 /* ------------------------------------------------------------------ */
 /* Plan file                                                           */
 /* ------------------------------------------------------------------ */
 
 export function getPlanFilePath(cwd: string, config: PlanModeConfig): string {
   return config.planFile ? resolve(cwd, config.planFile) : join(cwd, "PLAN.md");
+}
+
+/**
+ * True when `rawPath` (an edit/write target, possibly with a leading `@`)
+ * is the plan file itself or resolves inside one of the profile's
+ * `writePaths` directories (resolved against `cwd`). Exact resolved-path
+ * comparison means `..` escapes land outside the set and are rejected.
+ */
+export function isAllowedWritePath(
+  cwd: string,
+  planFile: string,
+  writePaths: string[] | undefined,
+  rawPath: string,
+): boolean {
+  const resolved = resolve(cwd, String(rawPath ?? "").replace(/^@/, ""));
+  if (resolved === planFile) return true;
+  if (!writePaths) return false;
+  for (const p of writePaths) {
+    const base = resolve(cwd, p);
+    if (resolved === base) return true;
+    const prefix = base === "/" ? "/" : base + "/";
+    if (resolved.startsWith(prefix)) return true;
+  }
+  return false;
 }
 
 export const PLAN_TEMPLATE = `# Plan

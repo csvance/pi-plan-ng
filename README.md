@@ -10,6 +10,11 @@ to execute it. Execution progress is tracked with **todos** (the `todo`
 tool from `pi-agent-extensions`): each checklist step in the plan becomes
 a todo, and the plan file itself is left untouched while executing.
 
+`/plan <profile>` enters plan mode with a user-defined **profile** that
+extends the restricted allowlist — extra tools (e.g. MCP tools), extra
+bash commands (e.g. `julia`), and extra writable paths. See
+[Profiles](#profiles).
+
 The plan file is **never deleted** when you exit or re-enter plan mode. It
 is only replaced by an explicit, user-confirmed reset (`/plan clear` or the
 agent's `plan_clear` tool).
@@ -105,11 +110,12 @@ The extension is auto-discovered from `.pi/extensions/` on the next start
 | Action | Command / key |
 | ------ | ------------- |
 | Enter / exit plan mode | `/plan` (toggles) |
+| Enter plan mode with a profile (e.g. julia) | `/plan julia` |
 | Execute the plan (exit plan mode + full tools) | `/plan go` |
 | Open the plan in a full-screen editor (view / scroll / edit) | `/plan open` or `Alt+O` |
 | Reset the plan file (asks for confirmation) | `/plan clear` |
 | Show state (mode, plan file, search config) | `/plan status` |
-| Start pi already in plan mode | `pi --plan` |
+| Start pi already in plan mode | `pi --plan` or `pi --plan-profile <name>` |
 
 ### The loop
 
@@ -146,19 +152,28 @@ are created from the plan's checklist steps when you run `/plan go`.
 
 ### Safe bash allowlist
 
-Bash commands must start with a bare allowlisted command and may not
-contain shell metacharacters (`;`, `&`, `|`, backticks, `$()`, `<`, `>`,
-parens, newlines). Allowed commands include:
+Bash commands must start with a bare allowlisted command. **Read-only
+composition is allowed**: pipelines (`grep -r foo . | head -20`) and `&&`
+chains (`cd src && ls`) — every segment must independently pass the same
+checks, so no non-allowlisted command can ever run. `;`, `||`, and
+backgrounding (`&`) stay blocked, as do backticks, `$()`, `<`, `>`,
+parens, and newlines. Quoted text is literal (`grep 'a|b' file`, `echo 'a
+&& b'`, julia one-liners with `;` inside quotes) — except `$` and
+backticks inside **double** quotes, where bash still expands them, so
+those stay blocked (`echo "$(ls)"` is rejected). Allowed commands include:
 
 ```
 ls cat head tail wc grep rg find tree file stat du df realpath readlink
 basename dirname nl fold tac sort uniq cut tr comm join paste column od
-hexdump xxd strings sha256sum md5sum jq yq bat less more diff cmp pwd
+hexdump xxd strings sha256sum md5sum jq yq bat less more diff cmp cd pwd
 which whoami echo printf printenv date uptime uname id hostname ps type
 git status|log|diff|show|ls-files|rev-parse|shortlog|blame|whatchanged|
 describe|check-ignore|check-attr|count-objects|symbolic-ref|name-rev|
 help|version|ls-tree|ls-remote|grep
 ```
+
+`cd` only affects the current bash call (each call runs in a fresh
+shell) — chain it with `&&` in the same command.
 
 Deliberately excluded: anything that writes, executes other commands, or
 touches the network (`rm`, `touch`, `mkdir`, `git push`, `git checkout`,
@@ -167,6 +182,50 @@ touches the network (`rm`, `touch`, `mkdir`, `git push`, `git checkout`,
 network sandboxing via bubblewrap/sandbox-exec), pair this with the
 [`sandbox` example extension](https://github.com/earendil-works/pi-mono/tree/main/examples/extensions/sandbox)
 — plan mode's gates and the sandbox compose cleanly.
+
+## Profiles
+
+Profiles extend plan mode's allowlist for specific workflows. Define them
+in the config — global `~/.pi/agent/plan-mode.json` or project
+`.pi/plan-mode.json`; profiles **deep-merge by name** (global → project),
+so a project can extend or override a global profile:
+
+```json
+{
+  "profiles": {
+    "julia": {
+      "description": "Planning with Julia script execution",
+      "tools": ["kaimon*"],
+      "bash": ["julia"],
+      "writePaths": ["notebooks/"]
+    }
+  }
+}
+```
+
+- **`/plan <name>`** enters plan mode with that profile (or switches to it
+  if plan mode is already on). Bare `/plan` keeps its toggle behavior
+  (no profile). `/plan status` shows the active profile and lists
+  available ones; argument completions include profile names.
+  Built-in subcommands (`go`, `clear`, `status`, `open`) take precedence
+  over profile names.
+- **`tools`** — extra tool names allowed (MCP or extension tools). Exact
+  names or `*`-suffix globs (`kaimon*` matches every available tool
+  starting with `kaimon`). Unknown entries are warned about and ignored
+  at activation.
+- **`bash`** — extra bare command names allowed through the bash gate
+  (e.g. `julia`), composable with `|` and `&&` like the defaults
+  (`cd src && julia --project=. test/runtests.jl | tail -30`).
+- **`writePaths`** — directories where `edit`/`write` are allowed in
+  addition to the plan file (relative to the project root).
+- **Startup:** `pi --plan-profile <name>` starts pi in plan mode with
+  that profile.
+
+> **Security note:** profiles deliberately relax plan-mode guarantees. A
+> profile bash command (e.g. `julia`) is arbitrary execution — the
+> process decides what it writes, not the gate. Treat profiles as
+> trusted, user-authored config; everything not explicitly granted stays
+> blocked.
 
 ## Web search
 
