@@ -1,0 +1,35 @@
+{
+  "name": "pi-plan-mode",
+  "version": "0.1.0",
+  "description": "Claude Code-style plan mode for pi: restricted planning loop with a persistent PLAN.md, compact plan widget with Alt+O full-screen view, DeepSeek web search, and /plan go execution.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "pi", "plan-mode", "extension", "planning"],
+  "files": [
+    "index.ts",
+    "utils.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "plan-mode.config.example.json"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
