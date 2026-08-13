@@ -626,10 +626,6 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 
-  // Record our own plan_clear's provenance so the gate can distinguish it
-  // from a lookalike registered by another extension.
-  captureOwnToolSource("plan_clear");
-
   /* ---------------------------------------------------------------- */
   /* Gates: enforce plan mode restrictions at the tool_call boundary   */
   /* ---------------------------------------------------------------- */
@@ -685,8 +681,11 @@ export default function (pi: ExtensionAPI): void {
     }
 
     // plan_clear is registered by this extension; only our own registration
-    // is trusted under this name (a lookalike plan_clear is blocked).
+    // is trusted under this name (a lookalike plan_clear is blocked). The
+    // source is captured lazily here — getAllTools() is not callable during
+    // extension loading, so load-time capture is impossible.
     if (event.toolName === "plan_clear") {
+      if (!ownToolSources.has("plan_clear")) captureOwnToolSource("plan_clear");
       const own = ownToolSources.get("plan_clear");
       if (own !== undefined && source !== own) {
         return {
