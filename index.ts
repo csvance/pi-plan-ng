@@ -30,6 +30,7 @@ import {
   buildWidgetLines,
   buildPlanModeTools,
   deepseekSearch,
+  expandToolEntry,
   getCollapsedLines,
   getPlanFilePath,
   isAbort,
@@ -64,6 +65,8 @@ export default function (pi: ExtensionAPI): void {
   let searchToolRegisteredByUs = false;
   let activeProfileName: string | undefined;
   let activeProfile: PlanModeProfile | undefined;
+  /** sourceInfo.source of the tools THIS extension registers (web_search, plan_clear). */
+  const ownToolSources = new Map<string, string>();
 
   /** Gate label used in block reasons and status, e.g. "plan mode (julia)". */
   function modeLabel(): string {
@@ -121,7 +124,8 @@ export default function (pi: ExtensionAPI): void {
   /**
    * Ensure the plan file exists, creating the template if needed.
    * Synchronous on purpose: command/event handlers must not await across
-   * a ctx lifetime (session replacement invalidates captured ctx objects).
+   * a ctx lifetime (session replacement invalidates captured ctx
+   * objects).
    */
   function ensurePlanFile(cwd: string): string {
     const config = loadConfig(cwd);
@@ -181,6 +185,18 @@ export default function (pi: ExtensionAPI): void {
         `[plan mode] Profile "${profileName}" references unknown tool "${u}" — ignored.`,
         "warning",
       );
+    }
+    // Warn when a `*`-suffix glob expands to more than one tool, so the
+    // user can see the blast radius of a broad allowlist entry.
+    for (const entry of profile.tools) {
+      if (!entry.endsWith("*")) continue;
+      const matches = expandToolEntry(entry, available);
+      if (matches.length > 1) {
+        ctx.ui.notify(
+          `[plan mode] Profile "${profileName}" tool glob "${entry}" expands to ${matches.length} tools: ${matches.join(", ")}.`,
+          "warning",
+        );
+      }
     }
   }
 
@@ -477,6 +493,16 @@ export default function (pi: ExtensionAPI): void {
   }
 
   /**
+   * Record the sourceInfo.source of a tool we just registered, so the gate
+   * can tell our own web_search/plan_clear apart from lookalikes registered
+   * by other extensions under the same name.
+   */
+  function captureOwnToolSource(name: string): void {
+    const t = pi.getAllTools().find((x) => x.name === name);
+    if (t?.sourceInfo?.source) ownToolSources.set(name, t.sourceInfo.source);
+  }
+
+  /**
    * Register our own DeepSeek-backed `web_search` tool. Only used when no
    * other extension already provides one (e.g. pi-deepseek-search).
    */
@@ -561,6 +587,7 @@ export default function (pi: ExtensionAPI): void {
     if (!hasWebSearch) {
       registerSearchTool();
       searchToolRegisteredByUs = true;
+      captureOwnToolSource("web_search");
     }
   }
 
@@ -568,7 +595,7 @@ export default function (pi: ExtensionAPI): void {
     name: "plan_clear",
     label: "Reset Plan (asks user)",
     description:
-      "Reset the plan file to a fresh template for an entirely new task. Always shows the user a confirmation dialog first and only resets if the user confirms. Use ONLY when the user's request starts a brand-new task unrelated to the current plan.",
+      "Reset this session's plan file to a fresh template for an entirely new task. Always shows the user a confirmation dialog first and only resets if the user confirms. Use ONLY when the user's request starts a brand-new task unrelated to the current plan.",
     promptSnippet: "Reset the plan file for an entirely new task (asks the user to confirm)",
     parameters: Type.Object({
       reason: Type.Optional(Type.String({ description: "Why the plan should be reset" })),
@@ -576,7 +603,7 @@ export default function (pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const ok = await ctx.ui.confirm(
         "Reset plan?",
-        "The plan file will be replaced with a fresh template. Continue?",
+        "Your session's plan file will be replaced with a fresh template. Continue?",
       );
       if (!ok) {
         return {
@@ -599,6 +626,10 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 
+  // Record our own plan_clear's provenance so the gate can distinguish it
+  // from a lookalike registered by another extension.
+  captureOwnToolSource("plan_clear");
+
   /* ---------------------------------------------------------------- */
   /* Gates: enforce plan mode restrictions at the tool_call boundary   */
   /* ---------------------------------------------------------------- */
@@ -606,6 +637,22 @@ export default function (pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     if (!planModeEnabled) return;
     const label = modeLabel();
+
+    // Provenance: name -> sourceInfo.source. Rebuilt on every call so
+    // dynamically registered tools are seen. ToolCallEvent does not expose
+    // sourceInfo, so the getAllTools() map is the source of truth.
+    const sourceByName = new Map(pi.getAllTools().map((t) => [t.name, t.sourceInfo?.source]));
+    const source = sourceByName.get(event.toolName);
+
+    // Profile tool names (expanded from the active profile), used below to
+    // decide whether a same-named non-builtin tool was explicitly allowed.
+    const profileToolNames = new Set<string>();
+    if (activeProfile?.tools) {
+      const available = new Set(pi.getAllTools().map((t) => t.name));
+      for (const entry of activeProfile.tools) {
+        for (const m of expandToolEntry(entry, available)) profileToolNames.add(m);
+      }
+    }
 
     // Catch-all: only plan-mode tools may be called (defense-in-depth for
     // resumed sessions or models that somehow reference inactive tools).
@@ -618,6 +665,40 @@ export default function (pi: ExtensionAPI): void {
           `Run /plan to leave plan mode, or /plan go to execute the plan with full access.`,
       };
     }
+
+    // Deep behavior gates are provenance-aware: they only apply to the real
+    // builtin tools. A lookalike extension tool sharing a base tool name
+    // (bash/edit/write) must not inherit the builtin's validation; it is
+    // blocked unless the active profile explicitly allowlisted that name.
+    if (event.toolName === "bash" || event.toolName === "edit" || event.toolName === "write") {
+      if (source !== "builtin") {
+        if (!profileToolNames.has(event.toolName)) {
+          return {
+            block: true,
+            reason:
+              `[${label}] Tool "${event.toolName}" is not the built-in ${event.toolName} tool and is not available in plan mode.\n` +
+              `Run /plan to leave plan mode, or /plan go to execute the plan with full access.`,
+          };
+        }
+        return; // explicitly allowlisted profile tool — no deep gate applies
+      }
+    }
+
+    // plan_clear is registered by this extension; only our own registration
+    // is trusted under this name (a lookalike plan_clear is blocked).
+    if (event.toolName === "plan_clear") {
+      const own = ownToolSources.get("plan_clear");
+      if (own !== undefined && source !== own) {
+        return {
+          block: true,
+          reason:
+            `[${label}] Tool "plan_clear" is not the plan-mode plan_clear tool and is not available in plan mode.\n` +
+            `Run /plan to leave plan mode, or /plan go to execute the plan with full access.`,
+        };
+      }
+    }
+    // web_search is exempt: it may be self-registered or provided by another
+    // extension (e.g. pi-deepseek-search), both of which are legitimate.
 
     if (isToolCallEventType("bash", event)) {
       if (!isSafeCommand(event.input.command, activeProfile?.bash)) {

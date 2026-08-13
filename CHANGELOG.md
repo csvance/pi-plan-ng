@@ -6,6 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Command-gate hardening (closes `AUDIT.md` L1–L8)**:
+  - `find` arguments are dequoted before dangerous-flag checks, so
+    obfuscated forms (`find . '-delete'`, `find . "-exec" …`, `-\delete`,
+    `-e'xec'`, brace expansion `-{d,d}elete`) are blocked; unquoted `{`/`}`
+    are rejected in `find` commands (L1).
+  - Write-capable flags on allowlisted commands are denied: `sort -o`/
+    `--output` (incl. attached forms), `yq -i`/`--inplace`, `git
+    diff/log --output=…` (L2, L7).
+  - Unquoted word-initial `~` is rejected (L7); unquoted word-start `#`
+    begins a comment mirroring bash, and commands ending in a lone
+    unquoted backslash are rejected (L6, L8).
+  - `git ls-remote` removed from the safe subcommands; URL/scp-style
+    remote arguments to git are rejected (L4).
+  - The write gate canonicalizes paths (realpath with
+    deepest-existing-ancestor fallback), closing the symlink escape in
+    `isAllowedWritePath` and the symlinked-`PLAN.md` variant (L3).
+  - The `tool_call` gate is provenance-aware: `bash`/`edit`/`write` deep
+    validation applies only to pi's builtin tools; a same-named tool from
+    another extension is blocked unless a profile explicitly allows it;
+    `plan_clear` must match our own registration; `*`-glob profile
+    entries warn when they expand to multiple tools (L5).
+  - New regression suites: `test/security-l1-l6-l8.test.ts`,
+    `test/security-l2-l4.test.ts`, `test/security-l3-l5.test.ts`.
+
 ### Added
 
 - **Profiles**: user-defined plan-mode profiles in the config (`profiles`

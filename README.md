@@ -145,7 +145,12 @@ Only these tools are active while planning:
 
 Everything else is removed from the active tool set, and the gates block
 any `bash`/`edit`/`write` call that violates the rules even if it slips
-through.
+through. The write gate canonicalizes paths (resolving symlinks) before
+comparing, so a symlink inside an allowed directory — or a `PLAN.md`
+that is itself a symlink — cannot redirect a write outside the allowed
+set. Base tool gates (`bash`/`edit`/`write`) apply only to pi's built-in
+tools: a same-named tool from another extension is not treated as the
+built-in.
 
 The `todo` tool is intentionally **not** available in plan mode — tasks
 are created from the plan's checklist steps when you run `/plan go`.
@@ -169,11 +174,32 @@ hexdump xxd strings sha256sum md5sum jq yq bat less more diff cmp cd pwd
 which whoami echo printf printenv date uptime uname id hostname ps type
 git status|log|diff|show|ls-files|rev-parse|shortlog|blame|whatchanged|
 describe|check-ignore|check-attr|count-objects|symbolic-ref|name-rev|
-help|version|ls-tree|ls-remote|grep
+help|version|ls-tree|grep
 ```
 
 `cd` only affects the current bash call (each call runs in a fresh
 shell) — chain it with `&&` in the same command.
+
+**Argument-level deny rules** (applied to every segment, in addition to
+the bare-head allowlist):
+
+- **Write-capable flags on allowlisted commands are rejected**: `sort -o
+  / --output` (any attached form: `-o=x`, `-oFILE`, `--output=…`), `yq
+  -i / --inplace`, and `git diff/log --output=…`. Git's read-only
+  `--output-indicator-*` diff flags stay allowed.
+- **Network-looking git arguments are rejected** (`git ls-remote` is not
+  allowlisted; URL and scp-style remote arguments to any git subcommand
+  are blocked).
+- **`find` arguments are dequoted before flag checks**: obfuscated forms
+  like `find . '-delete'`, `find . "-exec" …`, `find . -\delete`, or
+  `find . -e'xec' …` are caught, and unquoted brace expansion (`{`, `}`)
+  is rejected in `find` commands.
+- **Unquoted word-initial `~` is rejected** (bash would expand it); a
+  quoted `'~'` is fine. Unquoted globs (`*`, `?`) remain allowed — the
+  commands that could write via glob expansion have no write flags left.
+- **Unquoted `#` that starts a word begins a comment** (the rest of the
+  command is ignored, mirroring bash), and a command ending in a lone
+  unquoted backslash is rejected.
 
 Deliberately excluded: anything that writes, executes other commands, or
 touches the network (`rm`, `touch`, `mkdir`, `git push`, `git checkout`,

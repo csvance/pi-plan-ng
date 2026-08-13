@@ -3,8 +3,8 @@
  * DeepSeek-backed web search client (Responses API `web_search` tool).
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 /* ------------------------------------------------------------------ */
@@ -35,11 +35,27 @@ const SAFE_COMMANDS = new Set([
 const SAFE_GIT_SUBCOMMANDS = new Set([
   "status", "log", "diff", "show", "ls-files", "rev-parse", "shortlog", "blame",
   "whatchanged", "describe", "check-ignore", "check-attr", "count-objects",
-  "symbolic-ref", "name-rev", "help", "version", "ls-tree", "ls-remote", "grep",
+  "symbolic-ref", "name-rev", "help", "version", "ls-tree", "grep",
 ]);
 
 /** `find` flags that mutate the filesystem or execute commands. */
 const FIND_DANGEROUS = /^-?(exec|execdir|ok|okdir|delete|fprint|fprint0|fls|fprintf)/;
+
+/**
+ * Write-capable flags on otherwise allowlisted commands (like FIND_DANGEROUS).
+ * Each key is a command head; any argument word matching one of its regexes
+ * makes the segment unsafe.
+ */
+const COMMAND_FLAG_DENY: Record<string, RegExp[]> = {
+  // GNU sort: -o / -o= / -oFILE and the long alias --output / --output= all write.
+  sort: [/^(-o|--output)/],
+  yq: [/^(-i|--inplace)($|=)/],
+  // git --output=FILE writes; --output-indicator-* (diff formatting) stays allowed.
+  git: [/^--output($|=)/],
+};
+
+/** git arguments that look like network remotes (URL or scp-style). */
+const GIT_REMOTE = /^([a-z][a-z0-9+.-]*:\/\/|[^@\s]+@[^:\s]+:)/;
 
 /** Control characters never allowed anywhere in a plan-mode command. */
 const FORBIDDEN_ALWAYS = /[\r\n\x00]/;
@@ -57,12 +73,17 @@ function splitComposition(command: string): string[] | null {
   const segments: string[] = [];
   let current = "";
   let quote: "'" | '"' | null = null;
+  // Whether an unquoted `#` at this position would begin a word (and so
+  // start a comment). True at the start of the command and right after
+  // whitespace or a `|` / `&&` separator.
+  let atWordStart = true;
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
     if (quote === "'") {
       // single quotes: everything is literal
       current += ch;
       if (ch === "'") quote = null;
+      atWordStart = false;
       continue;
     }
     if (quote === '"') {
@@ -78,21 +99,37 @@ function splitComposition(command: string): string[] | null {
         continue;
       }
       if (ch === '"') quote = null;
+      atWordStart = false;
       continue;
     }
     // unquoted
     if (ch === "'" || ch === '"') {
       quote = ch;
       current += ch;
+      atWordStart = false;
       continue;
     }
     if (ch === "\\") {
-      // backslash escapes the next char (it is literal, whatever it is)
-      current += ch;
       if (i + 1 < command.length) {
+        // backslash escapes the next char (it is literal, whatever it is)
+        current += ch;
         current += command[i + 1];
         i++;
+        atWordStart = false;
+      } else {
+        return null; // trailing backslash: unterminated escape
       }
+      continue;
+    }
+    // An unquoted `#` that starts a word begins a comment: everything to
+    // the end of the command is ignored (mirrors bash — `ls # rm -rf /`
+    // validates as just `ls`).
+    if (ch === "#" && atWordStart) {
+      break;
+    }
+    if (ch === " " || ch === "\t") {
+      current += ch;
+      atWordStart = true;
       continue;
     }
     if (ch === ";" || ch === "$" || ch === "`" || ch === "<" || ch === ">" || ch === "(" || ch === ")") {
@@ -102,6 +139,7 @@ function splitComposition(command: string): string[] | null {
       if (command[i + 1] === "&") {
         segments.push(current);
         current = "";
+        atWordStart = true;
         i++;
         continue;
       }
@@ -112,13 +150,116 @@ function splitComposition(command: string): string[] | null {
       if (next === "|" || next === "&") return null; // || or |&
       segments.push(current);
       current = "";
+      atWordStart = true;
       continue;
     }
     current += ch;
+    atWordStart = false;
   }
   if (quote !== null) return null; // unterminated quote — fail closed
   segments.push(current);
   return segments;
+}
+
+/**
+ * Quote-aware word tokenizer, mirroring splitComposition's scanner rules:
+ * single-quoted text is fully literal and dequoted; double-quoted text
+ * processes backslash escapes and is dequoted; an unquoted backslash \X
+ * yields X; whitespace separates words. Returns null on an unterminated
+ * quote or trailing backslash (fail closed).
+ */
+function tokenizeWords(input: string): string[] | null {
+  const words: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let inWord = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else current += ch;
+      inWord = true;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null;
+      } else if (ch === "\\") {
+        if (i + 1 < input.length) {
+          current += input[i + 1];
+          i++;
+        } else {
+          current += "\\";
+        }
+      } else {
+        current += ch;
+      }
+      inWord = true;
+      continue;
+    }
+    // unquoted
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      inWord = true;
+      continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 < input.length) {
+        current += input[i + 1];
+        i++;
+      } else {
+        return null; // trailing backslash
+      }
+      inWord = true;
+      continue;
+    }
+    if (ch === " " || ch === "\t") {
+      if (inWord) {
+        words.push(current);
+        current = "";
+        inWord = false;
+      }
+      continue;
+    }
+    current += ch;
+    inWord = true;
+  }
+  if (quote !== null) return null; // unterminated quote
+  if (inWord) words.push(current);
+  return words;
+}
+
+/**
+ * True when `segment` contains an unquoted, unescaped `{` or `}`
+ * (brace-expansion metacharacters that can construct find flags).
+ */
+function hasUnquotedBrace(segment: string): boolean {
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\") {
+        i++; // escaped char is literal inside double quotes
+      } else if (ch === '"') {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === "\\") {
+      i++; // escaped char is literal
+      continue;
+    }
+    if (ch === "{" || ch === "}") return true;
+  }
+  return false;
 }
 
 /** Validate a single (already split) command segment: bare allowlisted head only. */
@@ -127,11 +268,31 @@ function isSafeSegment(segment: string, allowed: ReadonlySet<string>): boolean {
   if (!trimmed || trimmed.length > 2000) return false;
   const words = trimmed.split(/\s+/);
   const head = words[0] ?? "";
+
+  // Unquoted word-initial `~` would be expanded by bash. A quoted `'~'`
+  // starts with a quote character, so it never trips this check.
+  if (words.some((w) => w.startsWith("~"))) return false;
+
+  // Write-capable flags on otherwise allowlisted commands (like FIND_DANGEROUS).
+  const deny = COMMAND_FLAG_DENY[head];
+  if (deny && words.slice(1).some((w) => deny.some((re) => re.test(w)))) return false;
+
   if (head === "git") {
-    return words.length >= 2 && SAFE_GIT_SUBCOMMANDS.has(words[1]);
+    return (
+      words.length >= 2 &&
+      SAFE_GIT_SUBCOMMANDS.has(words[1]) &&
+      words.slice(1).every((w) => !GIT_REMOTE.test(w))
+    );
   }
   if (head === "find") {
-    return words.slice(1).every((w) => !FIND_DANGEROUS.test(w));
+    // Brace expansion can construct flags (`-{d,d}elete` → `-delete`), so
+    // reject any unquoted `{` / `}` in the segment.
+    if (hasUnquotedBrace(trimmed)) return false;
+    // Tokenize with dequoting so obfuscated flags like '-delete', "-exec",
+    // -\delete, or -e'xec' are tested as the plain flag they expand to.
+    const tokens = tokenizeWords(trimmed);
+    if (!tokens) return false;
+    return tokens.slice(1).every((w) => !FIND_DANGEROUS.test(w));
   }
   return allowed.has(head);
 }
@@ -285,10 +446,51 @@ export function getPlanFilePath(cwd: string, config: PlanModeConfig): string {
 }
 
 /**
+ * Canonicalize `p` by resolving symlinks as far as the filesystem allows.
+ * `realpathSync(p)` resolves every existing component; when `p` (or an
+ * ancestor) does not exist yet — the common case for an edit/write target
+ * about to be created — walk up to the deepest existing ancestor,
+ * canonicalize that, and re-append the missing components lexically. This
+ * keeps non-existent paths lexical while still detecting symlink escapes.
+ *
+ * NOTE: there is a residual TOCTOU race — a symlink swapped in between this
+ * check and the actual write is not caught. That is accepted for a
+ * model-facing gate (plan file and writePaths are user-configured, not an
+ * OS-level sandbox).
+ */
+function canonicalPath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    // not all components exist yet — fall through
+  }
+  const tail: string[] = [];
+  let current = p;
+  for (;;) {
+    try {
+      const base = realpathSync(current);
+      let result = base;
+      for (let i = tail.length - 1; i >= 0; i--) result = join(result, tail[i]);
+      return result;
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return p; // reached the filesystem root
+      tail.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
  * True when `rawPath` (an edit/write target, possibly with a leading `@`)
  * is the plan file itself or resolves inside one of the profile's
- * `writePaths` directories (resolved against `cwd`). Exact resolved-path
- * comparison means `..` escapes land outside the set and are rejected.
+ * `writePaths` directories (resolved against `cwd`). The target and each
+ * `writePaths` base are canonicalized before comparing, so a symlink inside
+ * an allowed directory cannot escape the allowed set, and `..` escapes land
+ * outside the set and are rejected. The plan file is compared at its
+ * lexical resolved path (only symlinks in its containing directories are
+ * canonicalized), so a PLAN.md that is itself a symlink out of the tree is
+ * rejected rather than silently followed.
  */
 export function isAllowedWritePath(
   cwd: string,
@@ -296,11 +498,12 @@ export function isAllowedWritePath(
   writePaths: string[] | undefined,
   rawPath: string,
 ): boolean {
-  const resolved = resolve(cwd, String(rawPath ?? "").replace(/^@/, ""));
-  if (resolved === planFile) return true;
+  const resolved = canonicalPath(resolve(cwd, String(rawPath ?? "").replace(/^@/, "")));
+  const plan = join(canonicalPath(dirname(planFile)), basename(planFile));
+  if (resolved === plan) return true;
   if (!writePaths) return false;
   for (const p of writePaths) {
-    const base = resolve(cwd, p);
+    const base = canonicalPath(resolve(cwd, p));
     if (resolved === base) return true;
     const prefix = base === "/" ? "/" : base + "/";
     if (resolved.startsWith(prefix)) return true;

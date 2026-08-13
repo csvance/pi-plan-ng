@@ -216,3 +216,39 @@ unquoted backslash.
 4. **L4** (drop `ls-remote`) — one-line
 5. **L6/L8** (splitter hardening) — small
 6. **L5** (tool provenance) — design decision, document first
+
+---
+
+## Resolution — 2026-08-13 (fixed)
+
+All findings fixed and empirically re-verified on the merged code
+(`node --experimental-strip-types` + real bash). Fixes implemented by a
+3-agent parallel workflow (one top finding per agent + distributed
+leads), integrated and re-verified by the main session.
+
+| ID | Status | Fix | Regression tests | Verification |
+|----|--------|-----|------------------|--------------|
+| L1 | **fixed** | Quote-aware `tokenizeWords` (single-quote dequote, double-quote escapes, `\X`→`X`) in the `find` branch; dequoted words tested against `FIND_DANGEROUS`; unquoted `{`/`}` rejected in find segments | `test/security-l1-l6-l8.test.ts` (10 blocked obfuscations) | All 8 audit repros + 13 new obfuscations (`-e"x"ec`, `-exe'c`, `-\delete`, `-{d}d}elete`, `"−fprint0"`, …) blocked; `find . -name x` still allowed |
+| L2 | **fixed** | `COMMAND_FLAG_DENY` per-command table applied to all argument words in `isSafeSegment`: `sort` `/^(-o\|--output)/` (covers `-o`, `-o=`, `-oFILE`, `--output`, `--output=`), `yq` `/^(-i\|--inplace)($\|=)/`, `git` `/^--output($\|=)/` (long diff `--output-indicator-*` flags stay allowed) | `test/security-l2-l4.test.ts` (11 blocked forms, 5 harmless forms) | All audit repros blocked incl. the previously-missed `sort --output FILE` long form; `sort /tmp/in`, `yq .x f.yaml`, `git status` still allowed |
+| L3 | **fixed** | `canonicalPath()` (realpath with deepest-existing-ancestor fallback) applied to target, plan file, and every `writePaths` base before comparison; plan file canonicalized at directory level so a symlinked `PLAN.md` is rejected. TOCTOU race documented as accepted | `test/security-l3-l5.test.ts` (6 real-fixture tests: dir symlink escape, PLAN.md symlink, lexical fallback, `..` escape, in-tree base symlink) | Symlink escape + PLAN.md-symlink repros now `false`; non-existent paths keep lexical behavior (existing `/proj` tests green) |
+| L4 | **fixed** | `ls-remote` removed from `SAFE_GIT_SUBCOMMANDS`; git args matching URL (`/^[a-z][a-z0-9+.-]*:\/\//`) or scp-style (`/^[^@\s]+@[^:\s]+:/`) remotes rejected | `test/security-l2-l4.test.ts` (`git ls-remote origin`, `git ls-remote`, URL/scp args) | Blocked; `git status`/`git diff` unaffected; `git ls-remote \| head` (composed) also blocked |
+| L5 | **fixed** | `tool_call` gate is provenance-aware: `bash`/`edit`/`write` deep validation applies only when `sourceInfo.source === "builtin"` (lookalikes blocked unless profile-allowlisted); `plan_clear` must match the source captured at our own registration; `*`-glob profile entries warn when they expand to >1 tool | none (gate is a pi-runtime closure; verified by inspection + typecheck) | Code inspection: gate now keys on provenance, not just name |
+| L6 | **fixed** | Unquoted word-start `#` truncates the remainder of the command (mirrors bash); `#` mid-word stays literal | `test/security-l1-l6-l8.test.ts` (`ls # rm -rf /` → true as plain `ls`; `find . -delete # comment` → still false; `echo a#b` → true) | Verified; semantics match bash |
+| L7 | **fixed** | Unquoted word-initial `~` rejected in any segment (fail closed); quoted `'~'` unaffected; unquoted globs remain allowed (write flags now denied) | `test/security-l2-l4.test.ts` (`cat ~/x`, `cd ~`, `sort -o ~/.ssh/authorized_keys` blocked; `ls '~'` allowed) | Verified; `echo ~` is a documented conservative block |
+| L8 | **fixed** | `splitComposition` rejects a command whose final character is an unquoted backslash | `test/security-l1-l6-l8.test.ts` (`ls \` → false) | Verified |
+
+**Post-fix adversarial re-check:** 21 new bypass attempts (flag long
+forms, attached forms, quote/backslash/brace splits, `git -c` smuggling,
+composed pipelines, `#`-suffix smuggling) — all blocked; 13 positive
+controls still allowed. Full suite: 44/44 tests + typecheck green.
+
+**Known conservative false positives (accepted, fail-closed):**
+`find . -name '-delete'` is blocked (dequoting makes it look like the
+flag — passing it as a literal name arg is pointless anyway), and
+`echo ~` / `cd ~` are blocked (word-initial tilde).
+
+**Out of scope / noted:** the residual TOCTOU race in
+`isAllowedWritePath` (symlink swapped between check and write) is
+accepted for a model-facing gate; `read`/`grep`/`find`/`ls` lookalikes
+from other extensions are not provenance-gated (no behavior gate
+attached to them).
