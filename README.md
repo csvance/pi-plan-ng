@@ -17,9 +17,9 @@ agent's `plan_clear` tool).
 ### From GitHub (recommended for everyone else)
 
 ```bash
-pi install https://github.com/<your-username>/pi-plan-mode
+pi install https://github.com/<your-username>/pi-plan-ng
 # pin a version with a tag:
-pi install https://github.com/<your-username>/pi-plan-mode@v0.1.0
+pi install https://github.com/<your-username>/pi-plan-ng@v0.1.0
 ```
 
 Installs to `~/.pi/agent/git/` (a real clone; `@ref` pins are respected and
@@ -224,14 +224,14 @@ gh auth login
 #    package.json (repository/bugs/homepage)
 
 # 3. create the (public) repo and push
-gh repo create pi-plan-mode --public --source=. --remote=origin --push
+gh repo create pi-plan-ng --public --source=. --remote=origin --push
 
 # 4. set metadata
 gh repo edit --description "Claude Code-style plan mode for pi: PLAN.md workflow, DeepSeek web search, /plan go execution, full-screen plan view (Alt+O)" --add-topic pi-package
 ```
 
 After that, anyone can install it with
-`pi install https://github.com/<your-username>/pi-plan-mode`.
+`pi install https://github.com/<your-username>/pi-plan-ng`.
 
 ## Credits
 

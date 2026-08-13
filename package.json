@@ -1,5 +1,5 @@
 {
-  "name": "pi-plan-mode",
+  "name": "pi-plan-ng",
   "version": "0.1.0",
   "description": "Claude Code-style plan mode for pi: restricted planning loop with a persistent PLAN.md, compact plan widget with Alt+O full-screen view, DeepSeek web search, and /plan go execution.",
   "type": "module",
