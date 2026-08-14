@@ -127,7 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-08-13
 
-Initial release of **Plan Mode (v2)** — a Claude Code-style planning extension
+Initial release of **Plan Mode** — a Claude Code-style planning extension
 for pi. A rewrite of the official
 [`earendil-works/pi-mono` example](https://github.com/earendil-works/pi-mono/tree/main/examples/extensions/plan-mode)
 with a persistent `PLAN.md` workflow.

@@ -7,3 +7,5 @@ npm-debug.log*
 dist/
 coverage/
 PLAN.md
+.scratch/
+.pi-subagents/

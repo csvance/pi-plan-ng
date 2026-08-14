@@ -1,5 +1,5 @@
 /**
- * Plan mode (v2) — Claude Code-style planning for pi.
+ * Plan mode — Claude Code-style planning for pi.
  *
  * `/plan` enters plan mode: the agent's tools are restricted to reading
  * files, read-only bash, and writing ONLY the plan file (plus whatever a
@@ -46,8 +46,8 @@ import {
 import { openPlanViewer } from "./plan-view.ts";
 
 /** Plan-mode state and context entry types. */
-const CONTEXT_CUSTOM_TYPE = "plan-mode-v2-context";
-const STATE_CUSTOM_TYPE = "plan-mode-v2";
+const CONTEXT_CUSTOM_TYPE = "plan-mode-context";
+const STATE_CUSTOM_TYPE = "plan-mode-state";
 
 const TOGGLE_KEY = "Alt+O";
 
@@ -322,7 +322,7 @@ export default function (pi: ExtensionAPI): void {
         disablePlanMode(ctx);
         pi.sendMessage(
           {
-            customType: "plan-execute-v2",
+            customType: "plan-execute",
             content: [
               "[EXECUTING PLAN]",
               "Full tool access has been restored. Execute the plan below, working through it step by step.",

@@ -1,238 +1,110 @@
-# Plan Mode (v2) — a Claude Code-style planning extension for pi
+# Plan Mode — a Claude Code-style planning extension for pi
 
-`/plan` puts pi into a restricted **planning loop**: the agent researches
-(read files, read-only bash, and a `web_search` tool if one exists), states
-what it is about to update, and maintains a plan in a markdown file. A
-one-line status widget above the input box shows the plan file and line
-count; **`Alt+O`** opens the full plan in a full-screen **viewer** —
-rendered markdown, scrollable, with `e` toggling into the editor and back.
-`/plan go` hands the plan to the agent with full tool access to execute
-it. Execution progress is tracked with **todos** (the `todo` tool from
-[`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)):
-each checklist step in the plan becomes a todo, and the plan file itself
-is left untouched while executing.
+Plan Mode turns pi into a focused **planning loop**: instead of implementing
+on the first prompt, the agent researches, drafts a plan in `PLAN.md`, and
+refines it with you — then executes it on command with full tool access.
 
-`/plan <profile>` enters plan mode with a user-defined **profile** that
-extends the restricted allowlist — extra tools (e.g. MCP tools like
-Kaimon), extra bash commands (e.g. `julia`), and extra writable paths.
-This is the intended way to bring more execution into a planning session.
-See [Profiles](#profiles).
+The plan lives in a markdown file you can read, scroll, and edit in a
+**full-screen viewer** with rendered formatting. And because every planning
+session has different needs, Plan Mode is **extensible by design**: profiles
+let you open the door for extra bash commands (say, `julia`), extra tools
+(say, MCP servers like Kaimon), and extra writable paths — while everything
+else stays locked down. A configurable `reasoningEffort` sets how much
+thinking the planner puts into each turn.
 
-Everything in the config is optional; the only keys are `planFile`,
-`reasoningEffort` (thinking level for planning turns), and `profiles`.
-See [Configuration](#configuration).
+## Features
 
-The plan file is **never deleted** when you exit or re-enter plan mode. It
-is only replaced by an explicit, user-confirmed reset (`/plan clear` or the
-agent's `plan_clear` tool).
+**Full-screen plan viewer — rendered markdown, in-place editing.**
+
+- `Alt+O` (or `/plan open`) opens the plan in a full-screen viewer:
+  headings, lists, task checkboxes, code blocks, tables, and links rendered
+  as formatted markdown, wrapped to your terminal width.
+- Scroll with `↑`/`↓`, `ctrl+PageUp`/`ctrl+PageDown`, or `g`/`G` for
+  top/bottom.
+- Press `e` to switch to the full plan editor — it opens at the top of the
+  plan. `Shift+Enter` adds a newline, `Enter` saves back to the plan file
+  and returns to the rendered view, `Esc` closes without saving.
+- The viewer works whether or not plan mode is on, and the one-line status
+  widget above the input box (`📋 Plan <file> · N lines · Alt+O to view`)
+  refreshes after every change.
+
+**Extensible: profiles open the door for your tools.**
+
+- A **profile** extends plan mode's allowlist: extra tools (exact names or
+  `kaimon*` globs for MCP servers), extra bare bash commands (e.g.
+  `julia`), and extra writable paths.
+- Enter with `/plan julia`, switch profiles while planning, or start pi
+  already in profile mode with `pi --plan-profile <name>`.
+- Everything not explicitly granted by the active profile stays blocked.
+
+**Configurable thinking effort.**
+
+- `"reasoningEffort"` sets the thinking level for planning turns
+  (`off | minimal | low | medium | high | xhigh | max`), applied when plan
+  mode turns on and restored to your previous level when it turns off.
+
+**Execute the plan when it's ready.**
+
+`/plan go` hands the plan to the agent with full tool access — each
+checklist step becomes a tracked **todo**. See
+[Executing the plan](#executing-the-plan).
 
 ## Install
 
-### From GitHub (recommended for everyone else)
-
 ```bash
-pi install https://github.com/<your-username>/pi-plan-ng
-# pin a version with a tag:
-pi install https://github.com/<your-username>/pi-plan-ng@v0.1.0
+pi install https://github.com/csvance/pi-plan-ng
+# pin a version with a tag: pi install https://github.com/csvance/pi-plan-ng@v0.1.0
 ```
 
-Installs to `~/.pi/agent/git/` (a real clone; `@ref` pins are respected and
-reconciled by `pi update --extensions`). Restart pi or run `/reload`.
-
-### From the local git repo (the author's dev machine)
-
-If you keep a checkout of this repo on disk (e.g.
-`/home/csvance/Git/pi-plan-mode`), you can point pi at it directly:
+Requires Node ≥ 18. Or point pi at a local checkout (live reference — edits
+apply on `/reload`):
 
 ```bash
-# global (all projects)
-pi install /home/csvance/Git/pi-plan-mode
-# project-local (settings go in this project's .pi/)
-pi install /home/csvance/Git/pi-plan-mode -l
+pi install /home/csvance/Git/pi-plan-ng -l
 ```
 
-A local path is a **live reference, not a copy** — pi loads the extension
-straight from that directory. To update, just update the repo and reload:
+Or copy the directory into a project's `.pi/extensions/` for offline use.
+Restart pi or run `/reload` after installing.
 
-```bash
-git -C /home/csvance/Git/pi-plan-mode pull
-# then /reload in pi (or restart) — no re-install needed
-```
-
-`pi update` does nothing for local paths (nothing is fetched or copied), so
-this workflow is `git pull` + `/reload`. To remove the local install:
-
-```bash
-pi remove /home/csvance/Git/pi-plan-mode [-l]
-```
-
-Caveats:
-
-- Don't also copy the repo into the same project's `.pi/extensions/` —
-  installing the local path *and* auto-discovering a copy would register
-  `plan`, `Alt+O`, and `plan_clear` twice. Pick one way per
-  project (install for shared dev; copy for throwaway experiments).
-- Keep the folder path stable; a local install breaks if the directory moves.
-- Prefer the GitHub install for other machines/people: it is a copy with
-  pinned refs, updated via `pi update --extensions`.
-
-| Install source | Copy or live? | Update command | Best for |
-| -------------- | ------------- | -------------- | -------- |
-| GitHub URL | Copy (clone, pinned) | `pi update --extensions` | everyone else, pinned releases |
-| Local path | Live reference | `git pull` + `/reload` | the author, offline dev |
-
-### Dependencies
-
-Execution progress is tracked with the `todo` tool from
-[`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)
-([npm](https://www.npmjs.com/package/@juicesharp/rpiv-todo)).
-Install it once:
+One dependency: `/plan go` tracks execution with the `todo` tool from
+[`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo).
 
 ```bash
 pi install @juicesharp/rpiv-todo
 ```
-
-Unlike `web_search` (which, when present, comes from pi or another
-extension), this is a **hard dependency**: `/plan go` refuses to run
-without it, and `/plan status` reports whether it is available.
-
-### Manual copy (offline fallback)
-
-Copy this directory into your project's `.pi/extensions/`:
-
-```
-.pi/extensions/plan-mode/
-├── index.ts
-├── utils.ts
-├── package.json
-├── plan-mode.config.example.json
-└── README.md
-```
-
-The extension is auto-discovered from `.pi/extensions/` on the next start
-(or `/reload`).
 
 ## Usage
 
 | Action | Command / key |
 | ------ | ------------- |
 | Enter / exit plan mode | `/plan` (toggles) |
-| Enter plan mode with a profile (e.g. julia) | `/plan julia` |
+| Plan mode with a profile (e.g. julia) | `/plan julia` |
+| Open the plan in the full-screen viewer (`e` toggles editing) | `Alt+O` or `/plan open` |
 | Execute the plan (exit plan mode + full tools) | `/plan go` |
-| Open the plan in the full-screen viewer (rendered; `e` toggles editing) | `/plan open` or `Alt+O` |
 | Reset the plan file (asks for confirmation) | `/plan clear` |
-| Show state (mode, plan file, profile, effort) | `/plan status` |
+| Show state (mode, profile, effort, todos) | `/plan status` |
 | Start pi already in plan mode | `pi --plan` or `pi --plan-profile <name>` |
 
 ### The loop
 
-While plan mode is on, every message runs through the same loop:
+While plan mode is on, each message runs the same loop:
 
-1. The agent tells you — in one short line — what it is updating in the
-   plan and why.
-2. It updates the plan in the markdown file (only the plan file may be
-   written; everything else is read-only).
+1. The agent tells you — in one short line — what it is updating in the plan
+   and why.
+2. It updates the plan file (the only writable file).
 3. It replies with a brief summary of the change.
-4. The widget above the editor refreshes to show the updated plan.
 
-The agent is instructed that if your request clearly starts an **entirely
-new task** unrelated to the current plan, it should call `plan_clear` —
-which shows a confirmation dialog before replacing the file.
-
-## Tool restrictions in plan mode
-
-Only these tools are active while planning:
-
-- **`read`, `grep`, `find`, `ls`** — explore the codebase
-- **`web_search`** — only if pi or another extension provides one (see
-  [Web search](#web-search))
-- **`bash`** — restricted to a read-only allowlist (see below)
-- **`edit`, `write`** — allowed *only* on the plan file (enforced at the
-  `tool_call` boundary)
-- **`plan_clear`** — reset the plan for a new task (user confirmation)
-
-Profiles add to this set — extra tools (e.g. MCP tools), extra bash
-commands, and extra writable paths.
-
-Everything else is removed from the active tool set, and the gates block
-any `bash`/`edit`/`write` call that violates the rules even if it slips
-through. The write gate canonicalizes paths (resolving symlinks) before
-comparing, so a symlink inside an allowed directory — or a `PLAN.md`
-that is itself a symlink — cannot redirect a write outside the allowed
-set. Base tool gates (`bash`/`edit`/`write`) apply only to pi's built-in
-tools: a same-named tool from another extension is not treated as the
-built-in.
-
-The `todo` tool is intentionally **not** available in plan mode — tasks
-are created from the plan's checklist steps when you run `/plan go`.
-
-### Safe bash allowlist
-
-Bash commands must start with a bare allowlisted command. **Read-only
-composition is allowed**: pipelines (`grep -r foo . | head -20`) and `&&`
-chains (`cd src && ls`) — every segment must independently pass the same
-checks, so no non-allowlisted command can ever run. `;`, `||`, and
-backgrounding (`&`) stay blocked, as do backticks, `$()`, `<`, `>`,
-parens, and newlines. Quoted text is literal (`grep 'a|b' file`, `echo 'a
-&& b'`, julia one-liners with `;` inside quotes) — except `$` and
-backticks inside **double** quotes, where bash still expands them, so
-those stay blocked (`echo "$(ls)"` is rejected). Allowed commands include:
-
-```
-ls cat head tail wc grep rg find tree file stat du df realpath readlink
-basename dirname nl fold tac sort uniq cut tr comm join paste column od
-hexdump xxd strings sha256sum md5sum jq yq bat less more diff cmp cd pwd
-which whoami echo printf printenv date uptime uname id hostname ps type
-git status|log|diff|show|ls-files|rev-parse|shortlog|blame|whatchanged|
-describe|check-ignore|check-attr|count-objects|symbolic-ref|name-rev|
-help|version|ls-tree|grep
-```
-
-`cd` only affects the current bash call (each call runs in a fresh
-shell) — chain it with `&&` in the same command.
-
-**Argument-level deny rules** (applied to every segment, in addition to
-the bare-head allowlist):
-
-- **Write-capable flags on allowlisted commands are rejected**: `sort -o
-  / --output` (any attached form: `-o=x`, `-oFILE`, `--output=…`), `yq
-  -i / --inplace`, and `git diff/log --output=…`. Git's read-only
-  `--output-indicator-*` diff flags stay allowed.
-- **Network-looking git arguments are rejected** (`git ls-remote` is not
-  allowlisted; URL and scp-style remote arguments to any git subcommand
-  are blocked).
-- **`find` arguments are dequoted before flag checks**: obfuscated forms
-  like `find . '-delete'`, `find . "-exec" …`, `find . -\delete`, or
-  `find . -e'xec' …` are caught, and unquoted brace expansion (`{`, `}`)
-  is rejected in `find` commands.
-- **Unquoted word-initial `~` is rejected** (bash would expand it); a
-  quoted `'~'` is fine. Unquoted globs (`*`, `?`) remain allowed — the
-  commands that could write via glob expansion have no write flags left.
-- **Unquoted `#` that starts a word begins a comment** (the rest of the
-  command is ignored, mirroring bash), and a command ending in a lone
-  unquoted backslash is rejected.
-
-Deliberately excluded: anything that writes, executes other commands, or
-touches the network (`rm`, `touch`, `mkdir`, `git push`, `git checkout`,
-`awk`, `sed`, `xargs`, `env`, `curl`, `wget`, `ssh`, `sudo`, `find -exec`,
-`find -delete`, …). If you need stronger isolation (OS-level filesystem and
-network sandboxing via bubblewrap/sandbox-exec), pair this with the
-[`sandbox` example extension](https://github.com/earendil-works/pi-mono/tree/main/examples/extensions/sandbox)
-— plan mode's gates and the sandbox compose cleanly.
-
-> The agent sees this allowlist and the deny rules **in its context at the
-> start of every plan-mode turn** (injected with the plan-mode
-> instructions, generated from the same constants the gate enforces, plus
-> any profile bash additions). It is guidance, not enforcement — the
-> `tool_call` gate still blocks anything outside the allowlist regardless
-> of what the model attempts.
+The plan file is **never deleted** on exit or re-entry — it is only replaced
+by an explicit, confirmed reset (`/plan clear` or the agent's `plan_clear`
+tool). If a request clearly starts a brand-new task, the agent calls
+`plan_clear` to reset the plan (with your confirmation).
 
 ## Configuration
 
 The config lives in `~/.pi/agent/plan-mode.json` (global) or
-`.pi/plan-mode.json` (project); the project layer deep-merges on top of
-the global one. Copy the example from `plan-mode.config.example.json`.
-Everything is optional:
+`.pi/plan-mode.json` (project; merges over global, later fields/arrays
+win). Copy the example from `plan-mode.config.example.json`. Everything is
+optional:
 
 ```json
 {
@@ -251,196 +123,99 @@ Everything is optional:
 }
 ```
 
-- **`reasoningEffort`** — thinking level used for planning turns:
-  `off | minimal | low | medium | high | xhigh | max`. Applied when plan
-  mode turns on (clamped to the current model's capabilities) and
-  restored to the previous level when it turns off. Default: no override.
+- **`reasoningEffort`** — thinking level for planning turns:
+  `off | minimal | low | medium | high | xhigh | max`. Clamped to the
+  current model's capabilities; restored on exit.
 - **`planFile`** — plan file path, relative to the project root. Default:
-  `PLAN.md`.
+  `PLAN.md` (created with a template on first entry).
 - **`profiles`** — named allowlist extensions, see below.
 
-## Profiles
+### Profiles
 
-Profiles extend plan mode's allowlist for specific workflows. Define them
-under `profiles` in the config; profiles **deep-merge by name** (global →
-project), so a project can extend or override a global profile:
+Profiles extend plan mode's allowlist for specific workflows. They **merge
+by name** (global → project; later fields/arrays win), so a project can
+extend or override a global profile. Extending the `julia` profile from
+above with a writable notebook directory:
 
 ```json
 {
   "profiles": {
-    "julia": {
-      "description": "Planning with Julia script execution",
-      "bash": ["julia"],
-      "writePaths": ["notebooks/"]
-    },
-    "dev": {
-      "description": "Planning with MCP tool access (e.g. Kaimon)",
-      "tools": ["kaimon*"]
-    }
+    "julia": { "writePaths": ["notebooks/"] }
   }
 }
 ```
 
-- **`/plan <name>`** enters plan mode with that profile (or switches to it
-  if plan mode is already on). Bare `/plan` keeps its toggle behavior
-  (no profile). `/plan status` shows the active profile and lists
-  available ones; argument completions include profile names.
-  Built-in subcommands (`go`, `clear`, `status`, `open`) take precedence
-  over profile names.
-- **`tools`** — extra tool names allowed (MCP or extension tools). Exact
-  names or `*`-suffix globs (`kaimon*` matches every available tool
-  starting with `kaimon`). Unknown entries are warned about and ignored
-  at activation.
-- **`bash`** — extra bare command names allowed through the bash gate
-  (e.g. `julia`), composable with `|` and `&&` like the defaults
-  (`cd src && julia --project=. test/runtests.jl | tail -30`).
-- **`writePaths`** — directories where `edit`/`write` are allowed in
-  addition to the plan file (relative to the project root).
-- **Startup:** `pi --plan-profile <name>` starts pi in plan mode with
-  that profile.
+- **`tools`** — extra tool names (MCP or extension tools). Exact names or
+  `*`-suffix globs: `kaimon*` allows every available tool starting with
+  `kaimon`. Unknown entries warn and are ignored.
+- **`bash`** — extra bare command names through the bash gate, composable
+  with `|` and `&&` like the defaults (`cd src && julia test/runtests.jl |
+  tail -30`).
+- **`writePaths`** — directories where `edit`/`write` are allowed besides
+  the plan file (relative to the project root).
 
-> **Security note:** profiles deliberately relax plan-mode guarantees. A
-> profile bash command (e.g. `julia`) is arbitrary execution — the
-> process decides what it writes, not the gate. Treat profiles as
-> trusted, user-authored config; everything not explicitly granted stays
-> blocked.
+`/plan <name>` enters plan mode with that profile (or switches to it if
+already planning); built-in subcommands (`go`, `clear`, `status`, `open`)
+take precedence over profile names.
+
+> **Security:** profiles deliberately relax plan-mode guarantees — a
+> profile bash command like `julia` is arbitrary execution. Treat profiles
+> as trusted, user-authored config.
+
+## Plan-mode restrictions
+
+While planning, only these tools are active: `read`, `grep`, `find`, `ls`
+(explore), `bash` (read-only allowlist), `edit`/`write` (plan file only),
+`plan_clear`, and — when pi or another extension provides one —
+`web_search`. Profiles add their tools and commands on top.
+
+The **bash gate** only allows bare, read-only commands (`ls`, `grep`,
+`git status`/`log`/`diff`, …) and rejects anything that writes, executes
+other commands, or touches the network (`rm`, `sed`, `xargs`, `curl`,
+`ssh`, `sudo`, `git push`, …). Safe composition (`|`, `&&`) is allowed,
+and the write gate canonicalizes paths so symlinks cannot redirect a write
+outside the allowed set. The agent sees the exact allowlist and deny rules
+in its context each turn — and the gate enforces them regardless.
+
+## Executing the plan
+
+`/plan go` exits plan mode and hands the plan to the agent with full tool
+access. Execution is tracked with the `todo` tool
+([`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)):
+
+- Each checklist step (`- [ ]`) becomes a todo; plans without a checklist
+  are broken into logical steps.
+- Re-running a plan reuses the existing plan todos (marked
+  `metadata.tags: ["plan"]`) instead of duplicating them.
+- The plan file is left untouched — todos are the source of truth for
+  progress. Check them anytime with `/todos`.
+
+`/plan go` also works while plan mode is off. It refuses to start if the
+todos extension is missing.
 
 ## Web search
 
-Plan mode does **not** bundle a web search tool and takes no search
-configuration (no API keys). When pi or another extension provides a
-`web_search` tool, it stays available inside plan mode; when none exists,
-the tool list simply omits it. `read`, `grep`, `find`, and `ls` cover
-local research either way.
-
-Run `/plan status` to see whether a `web_search` tool is available.
-
-## Plan file
-
-- Default: `PLAN.md` in the project root. Override with `"planFile"` in the
-  config (relative to the project root). Created automatically with a
-  template the first time you enter plan mode.
-- Persists across sessions and across `/plan` on/off toggles. It is never
-  deleted implicitly.
-- While executing (`/plan go`), the plan file is **not** edited — each
-  checklist step becomes a todo (tracked by the rpiv-todo `todo` tool)
-  and progress is tracked there instead.
-
-## Execution tracking with todos
-
-`/plan go` hands the plan to the agent with full tool access. Instead of
-editing the plan file's checkboxes during execution, the agent tracks
-progress with the `todo` tool (requires
-[`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)):
-
-1. On `/plan go`, the agent lists existing todos first
-   (`todo {action:"list", includeDeleted:true}`) and reuses the ones
-   marked as plan todos (`metadata.tags` includes `"plan"`) from a
-   previous run — updating subject/status of changed steps and deleting
-   stale entries, so re-executing a plan does not duplicate tasks.
-2. It creates one todo per checklist step (`- [ ]`) in the plan file:
-   `todo {action:"create", subject:<step text>, description:<relevant
-   context from the plan>, metadata:{tags:["plan"]}}`. Plans without a
-   checklist are broken into logical steps.
-3. As it works, it marks each todo in_progress with an `activeForm`
-   before starting it, records brief notes on what was done by rewriting
-   the todo's `description` (calling `todo {action:"get", id}` first if
-   it needs the current text), and marks it completed immediately when
-   done — never in batches.
-4. The plan file is left untouched — todos are the source of truth for
-   step state. Check progress anytime with `/todos` (interactive list) or
-   `todo {action:"list", includeDeleted:true}`.
-
-If the todos extension is missing, `/plan go` shows a warning and does not
-start execution.
-
-## Display
-
-A one-line status widget above the input box shows the plan file, line
-count, and the `Alt+O` hint — the plan itself lives in the full-screen
-viewer.
-
-**`Alt+O` / `/plan open`** opens the plan in a full-screen **viewer** with
-two modes, toggled in place with `e`:
-
-- **View mode (default)** — the whole plan rendered as formatted markdown:
-  headings, lists, task checkboxes, code blocks, tables, and links, with
-  width-aware wrapping. Scroll with `↑`/`↓` (line), `ctrl+PageUp`/
-  `ctrl+PageDown` (page), or `g`/`G` (top/bottom). Plain `PageUp`/
-  `PageDown` are reserved by pi for scrolling the conversation transcript;
-  if you want them to scroll the plan instead, remap `tui.altScreen.pageUp`
-  / `tui.altScreen.pageDown` in your keybindings config — the viewer
-  already listens for the plain keys.
-- **Edit mode** (`e`) — the full plan editor, also full-screen (Shift+Enter
-  for newlines, `ctrl+PageUp`/`ctrl+PageDown` pages). It always opens at
-  the **top of the plan**. `Enter` saves the
-  changes back to the plan file, refreshes the widget, and returns to the
-  rendered view; `Esc` closes the viewer without saving. The viewer works
-  whether or not plan mode is currently on.
-
-The footer shows `⏸ plan` while plan mode is on. The widget and plan-mode
-state are persisted in the session (`pi.appendEntry`), so they survive
-`/reload` and session resume.
+Plan Mode doesn't bundle a search tool and needs no search configuration.
+When pi or another extension provides a `web_search` tool, it stays
+available in plan mode; otherwise the tool list simply omits it. Run
+`/plan status` to see what's available.
 
 ## Development
 
 ```bash
-npm install        # dev dependencies (typescript, types, pi types)
+npm install        # dev dependencies
 npm run typecheck  # tsc --noEmit (strict)
 npm test           # node:test — utils incl. the bash-allowlist security gate
 ```
 
-Note: the extension imports `./utils.ts` with the `.ts` extension (pi loads
-TypeScript directly via jiti), so `tsconfig.json` uses
-`allowImportingTsExtensions` + `noEmit`.
-
-See also: [`AUDIT.md`](./AUDIT.md) (security review of the command gate)
-and [`WORKFLOWS.md`](./WORKFLOWS.md) (multi-agent workflow orchestration
-guidance).
-
-## Publishing to GitHub
-
-The repo is already initialized (`main` branch, `v0.1.0` tag). To publish:
-
-```bash
-# 1. authenticate once
-gh auth login
-
-# 2. replace the <your-username> placeholders in this README and in
-#    package.json (repository/bugs/homepage)
-
-# 3. create the (public) repo and push
-gh repo create pi-plan-ng --public --source=. --remote=origin --push
-
-# 4. set metadata
-gh repo edit --description "Claude Code-style plan mode for pi: PLAN.md workflow, profiles for extra tools/execution (e.g. julia, MCP), configurable thinking effort, /plan go execution, full-screen plan viewer (Alt+O)" --add-topic pi-package
-```
-
-After that, anyone can install it with
-`pi install https://github.com/<your-username>/pi-plan-ng`.
+See [`AUDIT.md`](./AUDIT.md) for the security review of the command gate
+and [`WORKFLOWS.md`](./WORKFLOWS.md) for multi-agent workflow guidance.
 
 ## Credits
 
 A ground-up rewrite of the official
 [`plan-mode` example](https://github.com/earendil-works/pi-mono/tree/main/examples/extensions/plan-mode)
-from [pi-mono](https://github.com/earendil-works/pi-mono), with a
-file-based `PLAN.md` workflow, profiles that extend the allowlist with
-more execution/tool types (extra bash commands, MCP tools), a
-configurable thinking effort, `/plan go` execution, and a full-screen
-plan viewer with rendered markdown. MIT licensed.
-
-## Notes
-
-- `/plan go` also works while plan mode is already off: it reads the plan
-  file and starts execution with full tool access.
-- The stale "[PLAN MODE ACTIVE]" context is stripped from the LLM context
-  whenever plan mode is off, so later turns are never confused by old
-  planning instructions.
-- `plan_clear` (tool) and `/plan clear` (command) both ask for explicit
-  user confirmation before replacing the plan file.
-- **Repository layout:** this is a standalone repo — the package root is
-the repo root (`index.ts`, `utils.ts`, `package.json` at the top). It was
-developed in a scratch project's `.pi/extensions/plan-mode/` (pi's
-project-local auto-discovery location); to develop on it now, either clone
-it back into a project's `.pi/extensions/` or use the local-path install
-above in any project.
+from [pi-mono](https://github.com/earendil-works/pi-mono): a file-based
+`PLAN.md` workflow, a full-screen rendered plan viewer with in-place
+editing, profiles for extensibility, configurable thinking effort, and
+`/plan go` execution tracked with todos. MIT licensed.
