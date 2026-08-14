@@ -4,6 +4,10 @@
   "description": "Claude Code-style plan mode for pi: restricted planning loop with a persistent PLAN.md, profiles that bring in more execution/tool types (extra bash commands like julia, MCP tools like kaimon), configurable thinking effort, and /plan go execution tracked via todos (rpiv-todo).",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/csvance/pi-plan-ng.git"
+  },
   "keywords": ["pi-package", "pi", "plan-mode", "extension", "planning"],
   "files": [
     "index.ts",
@@ -19,7 +23,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
