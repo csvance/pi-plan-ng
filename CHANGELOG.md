@@ -41,6 +41,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/plan clear`, `plan_reset`, viewer save) additionally refuse to write
   through a symlinked plan file via the new `isSymlink` helper (previously
   `writeFileSync` followed the link and clobbered its target).
+- **`git symbolic-ref` restricted to the read-only query form** (R7): the
+  update form (`git symbolic-ref <name> <ref>`) writes `.git/HEAD` and
+  `--delete` removes a symbolic ref, so `symbolic-ref` now allows at most
+  one non-flag argument, no `--delete`, and `-m/--reason` consumes its
+  value. Query forms (`git symbolic-ref HEAD`, `--short`, `-q`) stay
+  allowed.
+- **`tree -o` / `--output-file` denied** (R8): `tree -o FILE` sends the
+  listing to FILE (a junk/overwrite primitive that can clobber arbitrary
+  paths); both forms are now blocked post-dequote.
+- **Untrusted project config constrained** (R9): a `planFile` from the
+  project's `.pi/plan-mode.json` must resolve inside the project (canonical
+  forms — symlinked subdirs cannot escape either); only the global,
+  user-owned config may point the plan file elsewhere, and a violating
+  project setting is ignored with a warning. Profile activation and
+  `/plan status` now display the actual grants (`bash:`/`tools:`/`write
+  paths:`) via the new `describeProfileGrants`, not just the
+  attacker-authored description.
+- **Tty-dependent write/exec flags denied as defense-in-depth** (R11):
+  `less -o/-O/--log-file/--LOG-FILE` (writes input to a log file) and
+  `bat --pager` (runs a pager command) are now blocked — inert through the
+  non-interactive bash tool today, live if a profile ever grants a pty.
+- **Hardlink residual documented** (R12, note-only): `canonicalPath` cannot
+  see hardlinks (same inode via a different path); accepted-risk family as
+  the documented TOCTOU race, noted in the code.
 
 ### Removed
 

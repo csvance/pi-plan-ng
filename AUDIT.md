@@ -641,4 +641,43 @@ R7 (`git symbolic-ref` write form), R8 (`tree -o`), R9 (config trust), R11
 (tty-dependent flags), R12 (hardlinks). Structural recommendation stands:
 move from per-command deny lists to per-command **safe-flag allowlists**.
 
+---
+
+## Round 2 — Resolution (R7/R8/R9/R11 fixed, R12 documented)
+
+**Date:** 2026-08-14 (same day as round 2)
+**Scope:** the remaining round-2 findings, one at a time after R1–R6. R10 was
+already closed by the R3 dequoting (quoted URLs are tested as argv).
+
+### What changed
+
+| ID | Status | Fix |
+|----|--------|-----|
+| R7 | **fixed** | `git symbolic-ref` limited to the query form via new `isSafeSymbolicRef`: at most one non-flag arg, `--delete` denied, `-m/--reason` consumes its value. Verified live first: `git symbolic-ref HEAD refs/heads/pwned-branch` switched HEAD; query forms (`--short`, `-q`) unaffected |
+| R8 | **fixed** | `tree` added to `COMMAND_FLAG_DENY`: `/^-o/`, `/^--output-file($|=)/` (post-dequote). `tree -o FILE` sends the listing to FILE |
+| R9 | **fixed** | (a) `loadConfig` constrains a project-config `planFile` to resolve inside the project (canonical forms, so a symlinked subdir cannot escape); outside/absolute paths are ignored with a warning — only the global config may point the plan file elsewhere. Verified the audit repro: project `{"planFile": "/tmp/victim.txt"}` no longer makes edit/write on the victim path pass the gate. (b) New `describeProfileGrants`; profile-activation notify and `/plan status` now show `bash:`/`tools:`/`write paths:` grants, not just the attacker-authored description. (c) confirmation prompt for project-sourced profiles: not implemented (optional per audit) — noted as a possible follow-up |
+| R10 | (already fixed) | Dequoting of `GIT_REMOTE` in the R3 pass blocks `git log 'https://evil.com/x'` |
+| R11 | **fixed** | Defense-in-depth deny entries (inert without a tty today, live if a profile grants a pty): `less` `/^-o/`, `/^-O/`, `/^--log-file($|=)/`, `/^--LOG-FILE($|=)/`; `bat` `/^--pager($|=)/`. `bat --paging=always` stays allowed |
+| R12 | **documented** | Hardlinks cannot be seen by `realpath` (same inode, different path) — note added to `canonicalPath`'s doc comment; same accepted-risk family as the TOCTOU race (requires attacker filesystem access or a crafted tarball). No code fix |
+
+### Verification
+
+- R7/R8/R11 gate sweep: every blocked form `false`, every control (`git
+  symbolic-ref --short HEAD`, `tree -L 2`, `less -N`, `bat --paging=always`)
+  `true`. R7 write form confirmed live in a real repo before the fix
+  (`HEAD` switched to `refs/heads/pwned-branch`).
+- R9: audit repro (absolute project `planFile`) now dropped — the victim path
+  no longer passes `isAllowedWritePath`; inside-project `planFile` still
+  honored; symlinked-subdir escape rejected; `describeProfileGrants`
+  returns the grant lines.
+- Full suite green: **70/70 tests** (65 baseline + 5 new R9 config tests)
+  + `tsc --noEmit` clean.
+
+### Still open
+
+Nothing from the round-2 table: all of R1–R12 are fixed, closed as
+accepted-risk (R12), or documented. The audit's structural recommendation
+(per-command **safe-flag allowlists** instead of deny lists) remains the
+suggested direction for any future hardening pass.
+
 

@@ -35,6 +35,7 @@ import {
   buildWidgetLines,
   buildPlanModeTools,
   describePlanModeBashRules,
+  describeProfileGrants,
   expandToolEntry,
   getPlanFilePath,
   isAllowedWritePath,
@@ -386,10 +387,12 @@ export default function (pi: ExtensionAPI): void {
         const planFile = getPlanFilePath(ctx.cwd, config);
         const profileNames = Object.keys(config.profiles ?? {});
         const activeDesc = activeProfile?.description ? ` — ${activeProfile.description}` : "";
+        const activeGrants = activeProfile ? describeProfileGrants(activeProfile) : [];
         ctx.ui.notify(
           [
             `Plan mode: ${planModeEnabled ? "ON" : "OFF"}`,
             `Profile: ${activeProfileName ?? "none (default)"}${activeDesc}`,
+            ...(activeGrants.length ? [`Grants: ${activeGrants.join("; ")}`] : []),
             `Available profiles: ${profileNames.length > 0 ? profileNames.join(", ") : "(none)"}`,
             `Plan file: ${planFile}`,
             `Web search: ${hasWebSearchTool() ? "available (from pi or another extension)" : "not available (no web_search tool installed)"}`,
@@ -429,10 +432,16 @@ export default function (pi: ExtensionAPI): void {
           ctx.ui.notify(`Could not activate profile "${action}".`, "warning");
           return;
         }
+        // Show the actual grants, not just the (attacker-authored) description
+        // (AUDIT R9).
+        const grants = describeProfileGrants(profile);
         ctx.ui.notify(
-          wasOn
-            ? `Switched to profile "${canonicalName}" (${profile.description ?? "no description"}).`
-            : `Plan mode on with profile "${canonicalName}" (${profile.description ?? "no description"}).`,
+          [
+            wasOn
+              ? `Switched to profile "${canonicalName}" (${profile.description ?? "no description"}).`
+              : `Plan mode on with profile "${canonicalName}" (${profile.description ?? "no description"}).`,
+            ...(grants.length ? [`Grants: ${grants.join("; ")}`] : []),
+          ].join("\n"),
           "info",
         );
         return;

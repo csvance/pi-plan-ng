@@ -4,7 +4,7 @@
  */
 
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, MarkdownTheme } from "@earendil-works/pi-tui";
@@ -59,6 +59,14 @@ const COMMAND_FLAG_DENY: Record<string, RegExp[]> = {
   // the searched content this is arbitrary code execution; --pager <cmd> spawns a
   // pager command when stdout is a tty (defense-in-depth; inert headless today).
   rg: [/^--pre($|=)/, /^--pager($|=)/],
+  // tree -o FILE sends the listing to FILE instead of stdout (junk/overwrite
+  // primitive: `tree -o ~/.bashrc .` clobbers an arbitrary path).
+  tree: [/^-o/, /^--output-file($|=)/],
+  // tty-dependent write/exec flags (inert through the non-interactive bash
+  // tool today, but live if a profile ever grants a pty): less -o/-O copy
+  // input to a log file; bat --pager runs a pager command. Defense-in-depth.
+  less: [/^-o/, /^-O/, /^--log-file($|=)/, /^--LOG-FILE($|=)/],
+  bat: [/^--pager($|=)/],
 };
 
 /**
@@ -74,6 +82,29 @@ const GIT_SUBCOMMAND_FLAG_DENY: Record<string, RegExp[]> = {
   // (`-O'touch /tmp/pwn'`), so the whole `-O`-prefixed word is denied.
   grep: [/^-O/, /^--open-files-in-pager($|=)/],
 };
+
+/**
+ * True when a `git symbolic-ref` invocation is the read-only query form.
+ * `git symbolic-ref <name> <ref>` writes the symbolic ref (repo-state
+ * mutation, e.g. pointing HEAD at a crafted ref) and `--delete` removes it,
+ * so only the query form is safe: at most one non-flag argument (the ref
+ * name), with `-m/--reason <reason>` consuming its value.
+ * `tokens` is the full dequoted segment: [git, symbolic-ref, args...].
+ */
+function isSafeSymbolicRef(tokens: string[]): boolean {
+  let positionals = 0;
+  for (let i = 2; i < tokens.length; i++) {
+    const w = tokens[i];
+    if (w === "-m" || w === "--reason") {
+      i++; // consume the reason value
+      continue;
+    }
+    if (w === "--delete") return false; // deletes the ref — a write
+    if (w.startsWith("-")) continue; // -q/--quiet, --short, -mreason, ...
+    positionals++;
+  }
+  return positionals < 2;
+}
 
 /** git arguments that look like network remotes (URL or scp-style). */
 const GIT_REMOTE = /^([a-z][a-z0-9+.-]*:\/\/|[^@\s]+@[^:\s]+:)/;
@@ -315,6 +346,7 @@ function isSafeSegment(segment: string, allowed: ReadonlySet<string>): boolean {
     if (words.length < 2 || !SAFE_GIT_SUBCOMMANDS.has(words[1])) return false;
     const subDeny = GIT_SUBCOMMAND_FLAG_DENY[words[1]];
     if (subDeny && tokens.slice(1).some((w) => subDeny.some((re) => re.test(w)))) return false;
+    if (words[1] === "symbolic-ref" && !isSafeSymbolicRef(tokens)) return false;
     return tokens.slice(1).every((w) => !GIT_REMOTE.test(w));
   }
   if (head === "find") {
@@ -396,7 +428,10 @@ export function describePlanModeBashRules(extraCommands?: Iterable<string>): str
     "DENIED EVEN ON ALLOWED HEADS:",
     "- write/exec-capable flags: sort -o/--output and --compress-program, yq -i/--inplace, git diff/log --output=..., rg --pre/--pager (quoted or escaped forms too)",
     "- git grep -O / --open-files-in-pager (runs an arbitrary pager command on matching files); git diff -O<orderfile> stays allowed",
+    "- git symbolic-ref only in query form (no <ref> argument, no --delete — the update form writes .git/HEAD)",
     "- uniq with two or more file arguments (the second positional is the output file — a content-controlled write); one input file (or none) is fine",
+    "- tree -o/--output-file (writes the listing to a file instead of stdout)",
+    "- tty-dependent write/exec flags (defense-in-depth): less -o/-O/--log-file, bat --pager",
     "- find flags that write or execute: -exec, -execdir, -ok, -delete, -fprint... (quoted, escaped, or brace-obfuscated forms too)",
     "- unquoted { } brace expansion in any segment (can construct denied flags; quoted braces are fine)",
     "- network-looking git arguments (URLs, scp-style remotes); git ls-remote is not allowed",
@@ -462,16 +497,40 @@ export function mergeProfiles(
   return any ? merged : undefined;
 }
 
+/** True when `p` is `base` itself or a descendant of `base` (lexical). */
+function isInside(base: string, p: string): boolean {
+  if (p === base) return true;
+  const prefix = base === "/" ? "/" : base + sep;
+  return p.startsWith(prefix);
+}
+
 /** env -> global config (~/.pi/agent/plan-mode.json) -> project config (.pi/plan-mode.json) */
 export function loadConfig(cwd: string): PlanModeConfig {
   const merged: PlanModeConfig = {};
   const profiles: Array<Record<string, PlanModeProfile>> = [];
-  const paths = [join(getAgentDir(), CONFIG_FILE), join(cwd, CONFIG_DIR_NAME, CONFIG_FILE)];
-  for (const p of paths) {
+  const globalPath = join(getAgentDir(), CONFIG_FILE);
+  const projectPath = join(cwd, CONFIG_DIR_NAME, CONFIG_FILE);
+  for (const p of [globalPath, projectPath]) {
     if (!existsSync(p)) continue;
     try {
       const parsed = JSON.parse(readFileSync(p, "utf8")) as PlanModeConfig;
-      Object.assign(merged, parsed);
+      if (p === projectPath && parsed.planFile !== undefined) {
+        // The project config ships with the (possibly untrusted) checkout;
+        // a planFile resolving outside the project would let edit/write treat
+        // an arbitrary path as "the plan file" with no opt-in beyond /plan
+        // (AUDIT R9). Constrain it to the project — only the global,
+        // user-owned config may point the plan file elsewhere. Compare
+        // canonical forms so symlinked subdirs cannot escape either.
+        if (isInside(canonicalPath(cwd), canonicalPath(resolve(cwd, parsed.planFile)))) {
+          merged.planFile = parsed.planFile;
+        } else {
+          console.warn(
+            `[plan-mode] ignoring project planFile "${parsed.planFile}": must resolve inside ${cwd}`,
+          );
+        }
+      } else {
+        Object.assign(merged, parsed);
+      }
       if (parsed.profiles) profiles.push(parsed.profiles);
     } catch (e) {
       console.error(`[plan-mode] Could not parse ${p}: ${e instanceof Error ? e.message : e}`);
@@ -549,6 +608,12 @@ export function getPlanFilePath(cwd: string, config: PlanModeConfig): string {
  * check and the actual write is not caught. That is accepted for a
  * model-facing gate (plan file and writePaths are user-configured, not an
  * OS-level sandbox).
+ *
+ * Hardlinks are likewise not detected: `realpath` cannot see them (same
+ * inode, different path), so a hardlink planted inside an allowed directory
+ * writes through to its linked target (AUDIT R12). Same accepted-risk family
+ * as the TOCTOU race — requires attacker filesystem access or a crafted
+ * tarball, and cannot be distinguished from a legitimately shared file.
  */
 const MAX_SYMLINK_DEPTH = 40;
 function canonicalPath(p: string, depth = 0): string {
@@ -653,6 +718,20 @@ export const PLAN_TEMPLATE = `# Plan
 export interface PlanWidgetTheme {
   bold(text: string): string;
   fg(color: string, text: string): string;
+}
+
+/**
+ * Human-readable summary of what activating a profile grants, for the
+ * activation notify — the profile's own `description` is attacker-authored,
+ * so the actual grants must be shown (AUDIT R9). Returns one line per grant
+ * category (bash commands, tools, write paths), or [] when there are none.
+ */
+export function describeProfileGrants(profile: PlanModeProfile): string[] {
+  const lines: string[] = [];
+  if (profile.bash?.length) lines.push(`bash: ${[...new Set(profile.bash)].join(", ")}`);
+  if (profile.tools?.length) lines.push(`tools: ${[...new Set(profile.tools)].join(", ")}`);
+  if (profile.writePaths?.length) lines.push(`write paths: ${[...new Set(profile.writePaths)].join(", ")}`);
+  return lines;
 }
 
 /**
