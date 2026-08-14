@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bash rules in the agent's context**: entering plan mode now shows the
+  agent the read-only bash allowlist (allowed heads + git subcommands,
+  generated from the gate's own constants) and the deny rules
+  (write-capable flags, `find` exec/delete flags, network git args,
+  `~`/`#`/backslash rules, composition metacharacters), plus any profile
+  bash additions. Guidance only — the `tool_call` gate still enforces
+  everything.
+
 ### Changed
 
 - **One-line plan widget**: the compact preview is gone — the widget above

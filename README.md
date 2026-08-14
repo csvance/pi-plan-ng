@@ -210,6 +210,13 @@ network sandboxing via bubblewrap/sandbox-exec), pair this with the
 [`sandbox` example extension](https://github.com/earendil-works/pi-mono/tree/main/examples/extensions/sandbox)
 — plan mode's gates and the sandbox compose cleanly.
 
+> The agent sees this allowlist and the deny rules **in its context at the
+> start of every plan-mode turn** (injected with the plan-mode
+> instructions, generated from the same constants the gate enforces, plus
+> any profile bash additions). It is guidance, not enforcement — the
+> `tool_call` gate still blocks anything outside the allowlist regardless
+> of what the model attempts.
+
 ## Profiles
 
 Profiles extend plan mode's allowlist for specific workflows. Define them

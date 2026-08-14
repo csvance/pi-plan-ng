@@ -320,6 +320,41 @@ export function isSafeCommand(command: string, extraCommands?: Iterable<string>)
   return segments.every((s) => isSafeSegment(s, allowed));
 }
 
+/**
+ * Human-readable plan-mode bash rules for the agent prompt. The allowed
+ * heads and git subcommands come from the live enforcement constants
+ * (`SAFE_COMMANDS`, `SAFE_GIT_SUBCOMMANDS`), so the prompt can never drift
+ * from the gate. The deny-rules text mirrors `COMMAND_FLAG_DENY` /
+ * `FIND_DANGEROUS` / `GIT_REMOTE` / `splitComposition` above — keep it in
+ * sync when changing the gate.
+ */
+export function describePlanModeBashRules(extraCommands?: Iterable<string>): string {
+  const heads = [...SAFE_COMMANDS].sort().join(", ");
+  const git = [...SAFE_GIT_SUBCOMMANDS].sort().join("|");
+  const lines = [
+    "SAFE BASH HEADS (bare command names; every | or && segment must pass the same checks):",
+    heads,
+    `git subcommands: ${git}`,
+    "",
+    "DENIED EVEN ON ALLOWED HEADS:",
+    "- write-capable flags: sort -o/--output, yq -i/--inplace, git diff/log --output=...",
+    "- find flags that write or execute: -exec, -execdir, -ok, -delete, -fprint... (quoted, escaped, or brace-obfuscated forms too)",
+    "- network-looking git arguments (URLs, scp-style remotes); git ls-remote is not allowed",
+    '- unquoted word-initial ~ (bash would expand it; a quoted \'~\' is fine)',
+    "- an unquoted # that starts a word begins a comment: the rest of the command is ignored (do not hide commands behind it)",
+    "- a command ending in a lone unquoted backslash",
+    "- composition metacharacters: ; || & $ ` < > ( ) and newlines; $ and backticks also inside double quotes",
+    "",
+    "NEVER ALLOWED: anything that writes, executes other commands, or touches the network",
+    "(rm, touch, mkdir, sed, awk, xargs, env, curl, wget, ssh, sudo, git push/checkout/...).",
+  ];
+  if (extraCommands) {
+    const additions = [...new Set(extraCommands)].join(", ");
+    if (additions) lines.push("", `Profile bash additions: ${additions}`);
+  }
+  return lines.join("\n");
+}
+
 /* ------------------------------------------------------------------ */
 /* Config                                                              */
 /* ------------------------------------------------------------------ */

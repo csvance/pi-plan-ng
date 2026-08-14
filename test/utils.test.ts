@@ -8,6 +8,7 @@ import {
   buildWidgetLines,
   cleanQueries,
   cleanUrl,
+  describePlanModeBashRules,
   expandToolEntry,
   getCollapsedLines,
   getPlanFilePath,
@@ -297,6 +298,49 @@ describe("buildWidgetLines", () => {
     const lines = buildWidgetLines("", "/p/PLAN.md", 5, "Alt+O", noopTheme);
     assert.equal(lines.length, 1);
     assert.match(lines[0], /\/p\/PLAN\.md/);
+  });
+});
+
+describe("describePlanModeBashRules", () => {
+  it("lists allowed heads and git subcommands from the live constants", () => {
+    const rules = describePlanModeBashRules();
+    const lines = rules.split("\n");
+    // heads line (index 1) is the comma-separated allowlist
+    assert.match(lines[1], /\bls\b/);
+    assert.match(lines[1], /\bgrep\b/);
+    assert.match(lines[1], /\bfind\b/);
+    const gitLine = lines.find((l) => l.startsWith("git subcommands:")) ?? "";
+    assert.match(gitLine, /\bstatus\b/);
+    assert.match(gitLine, /\bdiff\b/);
+    assert.doesNotMatch(gitLine, /\bpush\b/);
+    assert.doesNotMatch(gitLine, /\bls-remote\b/);
+  });
+
+  it("states the deny rules for the agent", () => {
+    const rules = describePlanModeBashRules();
+    assert.match(rules, /--output/);
+    assert.match(rules, /-exec/);
+    assert.match(rules, /~/);
+    assert.match(rules, /#/);
+    assert.match(rules, /;/);
+    assert.match(rules, /ls-remote is not allowed/);
+    assert.match(rules, /NEVER ALLOWED/);
+  });
+
+  it("never presents denied heads as allowed", () => {
+    const rules = describePlanModeBashRules();
+    const headsLine = rules.split("\n")[1];
+    assert.doesNotMatch(headsLine, /\b(rm|curl|ssh|sudo|touch|mkdir|sed|awk|xargs|env|wget)\b/);
+    // ...but the deny section names them as examples of what is excluded
+    assert.match(rules, /\brm\b/);
+    assert.match(rules, /\bcurl\b/);
+  });
+
+  it("includes profile bash additions", () => {
+    const rules = describePlanModeBashRules(["julia", "julia", "pluto"]);
+    assert.match(rules, /Profile bash additions: julia, pluto/);
+    const none = describePlanModeBashRules([]);
+    assert.doesNotMatch(none, /Profile bash additions/);
   });
 });
 
