@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Last-round edits highlighted in the plan viewer**: opening the plan
+  (`Alt+O` / `/plan open`) now shows the edits from the **last planning
+  round** by default — the full plan stays visible with additions tinted
+  green and removals red + strikethrough, single-line edits merged inline
+  (red removed + green added words on one line), and a `+N −M` summary in
+  the title. No `+`/`-` gutter markers, so copy-paste stays clean. Falls
+  back to the rendered plan when there is no prior round's change. The
+  baseline is captured in-memory at the start of each planning turn
+  (`before_agent_start`); manual viewer saves, `/plan clear`, and `/plan
+  file` switches advance it so they aren't shown as agent changes. New pure
+  `diff.ts` (jsdiff, instance-themed) + `test/diff.test.ts`; strikethrough
+  is behind a single `DIFF_STRIKETHROUGH_REMOVED` switch.
+
 - **Per-session plan file via `/plan file <name>`**: multiple agents in
   the same repo can plan in parallel without stepping on each other.
   `/plan file PLAN2.md` points this session at `PLAN2.md` (widget, `/plan

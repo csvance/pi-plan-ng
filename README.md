@@ -19,6 +19,12 @@ thinking the planner puts into each turn.
 - `Alt+O` (or `/plan open`) opens the plan in a full-screen viewer:
   headings, lists, task checkboxes, code blocks, tables, and links rendered
   as formatted markdown, wrapped to your terminal width.
+- **Last round's edits are highlighted by default**: opening the plan after
+  a planning turn shows the whole plan with additions in **green** and
+  removals in **red** (with strikethrough) right where they occur — single-line
+  edits are merged inline, and the title shows a `+N −M` summary. There are no
+  `+`/`-` gutter markers, so copy-paste of the plan stays clean. When there was
+  no change in the last round, the plan renders normally.
 - Scroll with `↑`/`↓`, `ctrl+PageUp`/`ctrl+PageDown`, or `g`/`G` for
   top/bottom.
 - Press `e` to switch to the full plan editor — it opens at the top of the

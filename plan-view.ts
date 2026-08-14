@@ -29,7 +29,14 @@ import type {
   MarkdownTheme,
   TUI,
 } from "@earendil-works/pi-tui";
-import { Editor, Markdown } from "@earendil-works/pi-tui";
+import { Editor, Markdown, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+  countChanges,
+  diffPlanLines,
+  hasChanges,
+  type ChangeCounts,
+  type DiffLine,
+} from "./diff.ts";
 import { buildEditorTheme, buildMarkdownTheme, isSymlink, PLAN_TEMPLATE } from "./utils.ts";
 
 /** Rows reserved for the chrome (title + hint lines) in view mode. */
@@ -79,10 +86,14 @@ export class PlanViewer implements Component, Focusable {
   private readonly editor: Editor;
   /** Perceived terminal height for the editor's window math (see setViewport). */
   private readonly editorRows = { value: 40 };
-  private mode: "view" | "edit" = "view";
+  private mode: "view" | "edit" | "diff" = "view";
   private scrollOffset = 0;
-  /** Lines of the last view-mode render at the current width. */
+  /** Lines of the last view/diff-mode render at the current width. */
   private lines: string[] = [];
+  /** Full-document inline diff of the last round (empty when none). */
+  private readonly diffLines: DiffLine[] = [];
+  /** Added/removed counts for the `+N −M` title hint. */
+  private readonly diffCounts: ChangeCounts = { additions: 0, removals: 0 };
   /** Overlay viewport in rows; updated per render cycle via `setViewport`. */
   private viewport = 40;
   private focusedInternal = false;
@@ -95,6 +106,7 @@ export class PlanViewer implements Component, Focusable {
     editorTheme: EditorTheme,
     planFile: string,
     content: string,
+    diffBefore: string | undefined,
     callbacks: PlanViewerCallbacks,
   ) {
     this.tui = tui;
@@ -105,6 +117,12 @@ export class PlanViewer implements Component, Focusable {
     this.planFile = planFile;
     this.callbacks = callbacks;
     this.markdown = new Markdown(content, 0, 0, mdTheme);
+    // The last-round diff is the default view when one exists; otherwise the
+    // rendered plan. diffBefore is undefined (no prior round) or equals content
+    // (no change) → plain rendered view.
+    this.diffLines = diffBefore !== undefined ? diffPlanLines(diffBefore, content, theme) : [];
+    this.diffCounts = countChanges(this.diffLines);
+    this.mode = hasChanges(this.diffLines) ? "diff" : "view";
     this.editor = new Editor(buildViewportTui(tui, () => this.editorRows.value), editorTheme);
     this.editor.setText(content);
     // pi-tui's setText places the cursor at the END of the document, so the
@@ -206,7 +224,8 @@ export class PlanViewer implements Component, Focusable {
   }
 
   render(width: number): string[] {
-    return this.mode === "edit" ? this.renderEditMode(width) : this.renderViewMode(width);
+    if (this.mode === "edit") return this.renderEditMode(width);
+    return this.mode === "diff" ? this.renderDiffMode(width) : this.renderViewMode(width);
   }
 
   private commit(text: string): void {
@@ -230,11 +249,35 @@ export class PlanViewer implements Component, Focusable {
 
   private renderViewMode(width: number): string[] {
     this.lines = this.markdown.render(width);
-    const viewport = this.contentViewport();
-    const max = Math.max(0, this.lines.length - viewport);
+    return this.renderScrollable("view", this.lines, this.contentViewport());
+  }
+
+  private renderDiffMode(width: number): string[] {
+    this.lines = this.renderDiffLines(width);
+    return this.renderScrollable("diff", this.lines, this.contentViewport());
+  }
+
+  /** Shared viewport clipping + chrome for the two scrollable modes. */
+  private renderScrollable(
+    mode: "view" | "diff",
+    lines: string[],
+    viewport: number,
+  ): string[] {
+    const max = Math.max(0, lines.length - viewport);
     this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, max));
-    const visible = this.lines.slice(this.scrollOffset, this.scrollOffset + viewport);
-    return [this.titleLine("view"), ...visible, this.hintLine(viewport)];
+    const visible = lines.slice(this.scrollOffset, this.scrollOffset + viewport);
+    return [this.titleLine(mode), ...visible, this.hintLine(viewport)];
+  }
+
+  /** Wrap each colored diff line to the content width and pad to full width. */
+  private renderDiffLines(width: number): string[] {
+    const out: string[] = [];
+    for (const line of this.diffLines) {
+      for (const wrapped of wrapTextWithAnsi(line.styled, width)) {
+        out.push(wrapped + " ".repeat(Math.max(0, width - visibleWidth(wrapped))));
+      }
+    }
+    return out.length > 0 ? out : [""];
   }
 
   private renderEditMode(width: number): string[] {
@@ -244,12 +287,14 @@ export class PlanViewer implements Component, Focusable {
     return [this.titleLine("edit"), ...editorLines.slice(0, Math.max(1, this.viewport - 1))];
   }
 
-  private titleLine(mode: "view" | "edit"): string {
-    const label = mode === "view" ? "📋 Plan" : "✏️ Edit";
+  private titleLine(mode: "view" | "edit" | "diff"): string {
+    const label = mode === "edit" ? "✏️ Edit" : "📋 Plan";
     const hints =
-      mode === "view"
-        ? " · e edit · esc close"
-        : " · ctrl+pgup/pgdn page · enter save · shift+enter newline · esc close";
+      mode === "edit"
+        ? " · ctrl+pgup/pgdn page · enter save · shift+enter newline · esc close"
+        : mode === "diff"
+          ? ` · last round +${this.diffCounts.additions} −${this.diffCounts.removals} · e edit · esc close`
+          : " · e edit · esc close";
     return (
       this.theme.fg("accent", label) +
       " " +
@@ -300,6 +345,7 @@ export class PlanViewer implements Component, Focusable {
 export async function openPlanViewer(
   ctx: ExtensionContext,
   planFile: string,
+  diffBefore: string | undefined,
   onSaved: (text: string) => void,
 ): Promise<void> {
   if (!ctx.hasUI) {
@@ -318,7 +364,7 @@ export async function openPlanViewer(
   let viewer: PlanViewer | undefined;
   await ctx.ui.custom<undefined>(
     (tui, theme, keybindings, done) => {
-      viewer = new PlanViewer(tui, keybindings, theme, mdTheme, editorTheme, planFile, content, {
+      viewer = new PlanViewer(tui, keybindings, theme, mdTheme, editorTheme, planFile, content, diffBefore, {
         onSave: (text) => {
           // Refuse to save through a symlinked plan file: writeFileSync would
           // follow it and clobber its target (AUDIT R6).

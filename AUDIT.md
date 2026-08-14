@@ -680,4 +680,22 @@ accepted-risk (R12), or documented. The audit's structural recommendation
 (per-command **safe-flag allowlists** instead of deny lists) remains the
 suggested direction for any future hardening pass.
 
+---
+
+## Dependency note (2026-08-14) — `diff` (jsdiff)
+
+`diff.ts` (last-round diff highlighting in the plan viewer) imports
+`diffLines`/`diffWords` from **`diff` (jsdiff) v8.0.4**. `diff` is already a
+direct, pinned dependency of `@earendil-works/pi-coding-agent` (the harness
+core), so it is guaranteed present at runtime; it is declared as a **peer
+ dependency** here for clarity. It is pure JS (no transitive deps), BSD-3-Clause,
+and v8 ships its own TypeScript types (no `@types/diff` needed).
+
+Security posture: `diff` is a pure text-comparison library operating only on the
+plan file's in-memory content (the "before" snapshot and the current plan text).
+It never touches the filesystem, shells, or network, and is not reachable by any
+plan-mode command gate (it runs in the extension's own `diff.ts`). Its input is
+plan content only — no untrusted flag/command parsing. No new attack surface.
+The diff output is rendered with pi's semantic `toolDiff*` theme colors.
+
 

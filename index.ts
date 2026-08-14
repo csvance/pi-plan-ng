@@ -84,6 +84,13 @@ export default function (pi: ExtensionAPI): void {
   let activePlanFile: string | undefined;
   /** Thinking level captured on entry, restored when plan mode turns off. */
   let savedThinkingLevel: ThinkingLevel | undefined;
+  /**
+   * Plan content at the start of the last planning round (in-memory only). The
+   * viewer diffs this against the current file to highlight last-round edits.
+   * Refreshed each round in `before_agent_start`; advanced past manual
+   * edits/clears so they are not shown as agent changes.
+   */
+  let lastRoundBefore: string | undefined;
   /** sourceInfo.source of the tools THIS extension registers (plan_clear). */
   const ownToolSources = new Map<string, string>();
 
@@ -425,6 +432,9 @@ export default function (pi: ExtensionAPI): void {
           return;
         }
         writeFileSync(planFile, PLAN_TEMPLATE, "utf8");
+        // A reset is not an agent round: advance the baseline so no stale
+        // "last round" diff is shown for the fresh template.
+        lastRoundBefore = PLAN_TEMPLATE;
         if (planModeEnabled) refreshPlanWidget(ctx);
         ctx.ui.notify(`Plan reset: ${planFile}`, "info");
         return;
@@ -465,6 +475,8 @@ export default function (pi: ExtensionAPI): void {
         const name = rest.join(" ").trim();
         if (name === "") {
           activePlanFile = undefined;
+          // Switching files invalidates the prior round's baseline.
+          lastRoundBefore = undefined;
           ctx.ui.notify("Plan file reset to default.", "info");
           if (planModeEnabled) refreshPlanWidget(ctx);
           return;
@@ -478,6 +490,8 @@ export default function (pi: ExtensionAPI): void {
           return;
         }
         activePlanFile = name;
+        // New file, no prior round baseline yet.
+        lastRoundBefore = undefined;
         ctx.ui.notify(`Plan file set to ${name} (${resolved}).`, "info");
         if (planModeEnabled) refreshPlanWidget(ctx);
         return;
@@ -531,13 +545,18 @@ export default function (pi: ExtensionAPI): void {
   /* ---------------------------------------------------------------- */
 
   /**
-   * Open the plan in the full-screen viewer: rendered markdown by default,
-   * `e` toggles into the editor (Enter saves, Esc cancels — same semantics
-   * as the old plain-editor view). Works whether or not plan mode is on.
+   * Open the plan in the full-screen viewer: by default the last round's
+   * edits are highlighted (additions green, removals red/strikethrough); with
+   * no prior round's change it shows the rendered markdown. `e` toggles into
+   * the editor (Enter saves, Esc cancels — same semantics as the old
+   * plain-editor view). Works whether or not plan mode is on.
    */
   async function openPlanView(ctx: ExtensionContext): Promise<void> {
     const planFile = ensurePlanFile(ctx.cwd);
-    await openPlanViewer(ctx, planFile, (text) => {
+    await openPlanViewer(ctx, planFile, lastRoundBefore, (text) => {
+      // A manual viewer save is not an agent round: advance the baseline so
+      // the manual edit is not shown as a "last round" change.
+      lastRoundBefore = text;
       if (planModeEnabled) refreshPlanWidget(ctx);
       ctx.ui.notify("Plan updated.", "info");
     });
@@ -722,6 +741,14 @@ export default function (pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (_event, ctx) => {
     if (!planModeEnabled) return;
     const planFile = currentPlanFilePath(ctx.cwd);
+    // Baseline for the "last round" diff: the plan as it stands at the start of
+    // this round, before any edits within it. The viewer diffs this against the
+    // file's content when it is opened.
+    try {
+      lastRoundBefore = readFileSync(planFile, "utf8");
+    } catch {
+      lastRoundBefore = PLAN_TEMPLATE;
+    }
     return {
       message: {
         customType: CONTEXT_CUSTOM_TYPE,
