@@ -1,20 +1,26 @@
 # Plan Mode (v2) — a Claude Code-style planning extension for pi
 
 `/plan` puts pi into a restricted **planning loop**: the agent researches
-(read files, DeepSeek-backed web search, read-only bash), states what it is
-about to update, and maintains a plan in a markdown file. A one-line status
-widget above the input box shows the plan file and line count; **`Alt+O`**
-opens the full plan in a full-screen **viewer** — rendered markdown,
-scrollable, with `e` toggling into the editor and back. `/plan go` hands the plan to the agent with full tool access
-to execute it. Execution progress is tracked with **todos** (the `todo`
-tool from [`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)):
+(read files, read-only bash, and a `web_search` tool if one exists), states
+what it is about to update, and maintains a plan in a markdown file. A
+one-line status widget above the input box shows the plan file and line
+count; **`Alt+O`** opens the full plan in a full-screen **viewer** —
+rendered markdown, scrollable, with `e` toggling into the editor and back.
+`/plan go` hands the plan to the agent with full tool access to execute
+it. Execution progress is tracked with **todos** (the `todo` tool from
+[`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)):
 each checklist step in the plan becomes a todo, and the plan file itself
 is left untouched while executing.
 
 `/plan <profile>` enters plan mode with a user-defined **profile** that
-extends the restricted allowlist — extra tools (e.g. MCP tools), extra
-bash commands (e.g. `julia`), and extra writable paths. See
-[Profiles](#profiles).
+extends the restricted allowlist — extra tools (e.g. MCP tools like
+Kaimon), extra bash commands (e.g. `julia`), and extra writable paths.
+This is the intended way to bring more execution into a planning session.
+See [Profiles](#profiles).
+
+Everything in the config is optional; the only keys are `planFile`,
+`reasoningEffort` (thinking level for planning turns), and `profiles`.
+See [Configuration](#configuration).
 
 The plan file is **never deleted** when you exit or re-enter plan mode. It
 is only replaced by an explicit, user-confirmed reset (`/plan clear` or the
@@ -64,7 +70,7 @@ Caveats:
 
 - Don't also copy the repo into the same project's `.pi/extensions/` —
   installing the local path *and* auto-discovering a copy would register
-  `plan`, `Alt+O`, `web_search`, and `plan_clear` twice. Pick one way per
+  `plan`, `Alt+O`, and `plan_clear` twice. Pick one way per
   project (install for shared dev; copy for throwaway experiments).
 - Keep the folder path stable; a local install breaks if the directory moves.
 - Prefer the GitHub install for other machines/people: it is a copy with
@@ -86,9 +92,9 @@ Install it once:
 pi install @juicesharp/rpiv-todo
 ```
 
-Unlike `web_search` (which has a built-in fallback), this is a **hard
-dependency**: `/plan go` refuses to run without it, and `/plan status`
-reports whether it is available.
+Unlike `web_search` (which, when present, comes from pi or another
+extension), this is a **hard dependency**: `/plan go` refuses to run
+without it, and `/plan status` reports whether it is available.
 
 ### Manual copy (offline fallback)
 
@@ -115,7 +121,7 @@ The extension is auto-discovered from `.pi/extensions/` on the next start
 | Execute the plan (exit plan mode + full tools) | `/plan go` |
 | Open the plan in the full-screen viewer (rendered; `e` toggles editing) | `/plan open` or `Alt+O` |
 | Reset the plan file (asks for confirmation) | `/plan clear` |
-| Show state (mode, plan file, search config) | `/plan status` |
+| Show state (mode, plan file, profile, effort) | `/plan status` |
 | Start pi already in plan mode | `pi --plan` or `pi --plan-profile <name>` |
 
 ### The loop
@@ -138,11 +144,15 @@ which shows a confirmation dialog before replacing the file.
 Only these tools are active while planning:
 
 - **`read`, `grep`, `find`, `ls`** — explore the codebase
-- **`web_search`** — DeepSeek-backed web search (see below)
+- **`web_search`** — only if pi or another extension provides one (see
+  [Web search](#web-search))
 - **`bash`** — restricted to a read-only allowlist (see below)
 - **`edit`, `write`** — allowed *only* on the plan file (enforced at the
   `tool_call` boundary)
 - **`plan_clear`** — reset the plan for a new task (user confirmation)
+
+Profiles add to this set — extra tools (e.g. MCP tools), extra bash
+commands, and extra writable paths.
 
 Everything else is removed from the active tool set, and the gates block
 any `bash`/`edit`/`write` call that violates the rules even if it slips
@@ -217,21 +227,55 @@ network sandboxing via bubblewrap/sandbox-exec), pair this with the
 > `tool_call` gate still blocks anything outside the allowlist regardless
 > of what the model attempts.
 
+## Configuration
+
+The config lives in `~/.pi/agent/plan-mode.json` (global) or
+`.pi/plan-mode.json` (project); the project layer deep-merges on top of
+the global one. Copy the example from `plan-mode.config.example.json`.
+Everything is optional:
+
+```json
+{
+  "reasoningEffort": "low",
+  "planFile": "PLAN.md",
+  "profiles": {
+    "julia": {
+      "description": "Planning with Julia script execution",
+      "bash": ["julia"]
+    },
+    "dev": {
+      "description": "Planning with MCP tool access (e.g. Kaimon)",
+      "tools": ["kaimon*"]
+    }
+  }
+}
+```
+
+- **`reasoningEffort`** — thinking level used for planning turns:
+  `off | minimal | low | medium | high | xhigh | max`. Applied when plan
+  mode turns on (clamped to the current model's capabilities) and
+  restored to the previous level when it turns off. Default: no override.
+- **`planFile`** — plan file path, relative to the project root. Default:
+  `PLAN.md`.
+- **`profiles`** — named allowlist extensions, see below.
+
 ## Profiles
 
 Profiles extend plan mode's allowlist for specific workflows. Define them
-in the config — global `~/.pi/agent/plan-mode.json` or project
-`.pi/plan-mode.json`; profiles **deep-merge by name** (global → project),
-so a project can extend or override a global profile:
+under `profiles` in the config; profiles **deep-merge by name** (global →
+project), so a project can extend or override a global profile:
 
 ```json
 {
   "profiles": {
     "julia": {
       "description": "Planning with Julia script execution",
-      "tools": ["kaimon*"],
       "bash": ["julia"],
       "writePaths": ["notebooks/"]
+    },
+    "dev": {
+      "description": "Planning with MCP tool access (e.g. Kaimon)",
+      "tools": ["kaimon*"]
     }
   }
 }
@@ -263,29 +307,13 @@ so a project can extend or override a global profile:
 
 ## Web search
 
-Plan mode includes a `web_search` tool. It **reuses an existing
-`web_search` tool if one is registered** (e.g. the
-[`pi-deepseek-search`](https://pi.dev/packages/pi-deepseek-search) package)
-and only registers its own DeepSeek implementation as a fallback.
+Plan mode does **not** bundle a web search tool and takes no search
+configuration (no API keys). When pi or another extension provides a
+`web_search` tool, it stays available inside plan mode; when none exists,
+the tool list simply omits it. `read`, `grep`, `find`, and `ls` cover
+local research either way.
 
-The built-in fallback calls DeepSeek's `/responses` API with the server-side
-`web_search` tool and returns the synthesized answer plus citations.
-Configuration (env → `~/.pi/agent/plan-mode.json` → `.pi/plan-mode.json`):
-
-```json
-{
-  "apiKey": "sk-...",
-  "baseUrl": "https://api.deepseek.com",
-  "model": "deepseek-v4-flash",
-  "reasoningEffort": "low",
-  "searchTimeoutMs": 30000
-}
-```
-
-`DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_MODEL` environment
-variables work too. If neither is set, the tool falls back to the API key
-of pi's configured `deepseek` provider (`/login deepseek`). Run
-`/plan status` to see whether search is configured.
+Run `/plan status` to see whether a `web_search` tool is available.
 
 ## Plan file
 
@@ -354,10 +382,6 @@ The footer shows `⏸ plan` while plan mode is on. The widget and plan-mode
 state are persisted in the session (`pi.appendEntry`), so they survive
 `/reload` and session resume.
 
-> Note: the `collapsedLines` config key is still parsed for backwards
-> compatibility but no longer has any effect — there is no body preview in
-> the widget anymore.
-
 ## Development
 
 ```bash
@@ -389,7 +413,7 @@ gh auth login
 gh repo create pi-plan-ng --public --source=. --remote=origin --push
 
 # 4. set metadata
-gh repo edit --description "Claude Code-style plan mode for pi: PLAN.md workflow, DeepSeek web search, /plan go execution, full-screen plan viewer (Alt+O)" --add-topic pi-package
+gh repo edit --description "Claude Code-style plan mode for pi: PLAN.md workflow, profiles for extra tools/execution (e.g. julia, MCP), configurable thinking effort, /plan go execution, full-screen plan viewer (Alt+O)" --add-topic pi-package
 ```
 
 After that, anyone can install it with
@@ -400,8 +424,10 @@ After that, anyone can install it with
 A ground-up rewrite of the official
 [`plan-mode` example](https://github.com/earendil-works/pi-mono/tree/main/examples/extensions/plan-mode)
 from [pi-mono](https://github.com/earendil-works/pi-mono), with a
-file-based `PLAN.md` workflow, DeepSeek-backed web search, `/plan go`
-execution, and a full-screen plan viewer with rendered markdown. MIT licensed.
+file-based `PLAN.md` workflow, profiles that extend the allowlist with
+more execution/tool types (extra bash commands, MCP tools), a
+configurable thinking effort, `/plan go` execution, and a full-screen
+plan viewer with rendered markdown. MIT licensed.
 
 ## Notes
 

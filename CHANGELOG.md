@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **DeepSeek-backed `web_search` fallback**: plan mode no longer bundles its
+  own search tool and takes no search config — `apiKey`, `baseUrl`,
+  `model`, `searchTimeoutMs`, `collapsedLines`, and the
+  `DEEPSEEK_*` environment variables are gone, and the example config no
+  longer contains an API key. A `web_search` tool still stays available in
+  plan mode when pi or another extension provides one.
+
+### Changed
+
+- **`reasoningEffort` now controls the planning loop itself**: it maps to
+  pi's thinking level (`off | minimal | low | medium | high | xhigh | max`)
+  while plan mode is on — applied on entry (clamped to the model's
+  capabilities) and restored to the previous level on exit. Previously it
+  only tuned the bundled search's reasoning.
+- The example config and README now lead with what plan mode is actually
+  for: `profiles` that bring in more execution/tool types (e.g. `julia`
+  in a julia profile, `kaimon*` MCP tools), plus the optional
+  `reasoningEffort`.
+
 ### Added
 
 - **Bash rules in the agent's context**: entering plan mode now shows the

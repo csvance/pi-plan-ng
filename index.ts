@@ -2,11 +2,11 @@
  * Plan mode (v2) — Claude Code-style planning for pi.
  *
  * `/plan` enters plan mode: the agent's tools are restricted to reading
- * files, DeepSeek-backed web search, read-only bash, and writing ONLY the
- * plan file. Each turn the agent states what it's updating, updates the
- * plan in a markdown file (PLAN.md by default), and a compact preview is
- * shown in a widget above the editor. `Alt+O` opens the plan in a
- * full-screen editor to view, scroll, and edit it; saving writes the
+ * files, read-only bash, and writing ONLY the plan file (plus whatever a
+ * profile allows). Each turn the agent states what it's updating, updates
+ * the plan in a markdown file (PLAN.md by default), and a one-line status
+ * is shown in a widget above the editor. `Alt+O` opens the plan in a
+ * full-screen viewer to read, scroll, and edit it; saving writes the
  * changes back to the plan file.
  *
  * `/plan go` exits plan mode and executes the plan with full tool access.
@@ -15,8 +15,12 @@
  * metadata tags ["plan"], and the plan file itself is not edited while
  * executing.
  * `/plan <profile>` enters plan mode with a user-defined profile that
- * extends the allowlist (extra tools, bash commands, write paths) — see
- * the "profiles" key in the plan-mode config.
+ * extends the allowlist (extra tools such as MCP tools, extra bash
+ * commands, extra write paths) — see the "profiles" key in the plan-mode
+ * config. This is the intended way to bring in more execution: e.g. a
+ * `julia` bash command in a julia profile, or a `kaimon*` MCP tool set.
+ * The config also accepts "reasoningEffort" to set the thinking level
+ * used for planning turns (restored on exit).
  * `/plan clear` resets the plan file (with confirmation).
  * The plan file is never deleted on exit/re-entry; only an explicit,
  * user-confirmed reset replaces it.
@@ -30,26 +34,18 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import {
   buildWidgetLines,
   buildPlanModeTools,
-  deepseekSearch,
   describePlanModeBashRules,
   expandToolEntry,
-  getCollapsedLines,
   getPlanFilePath,
-  isAbort,
   isAllowedWritePath,
   isSafeCommand,
   loadConfig,
   PLAN_TEMPLATE,
-  type DeepSeekSearchResult,
   type PlanModeProfile,
 } from "./utils.ts";
 import { openPlanViewer } from "./plan-view.ts";
 
-/**
- * Tools available while plan mode is active (computed dynamically because
- * `web_search` may come from this extension or from an existing extension
- * such as pi-deepseek-search).
- */
+/** Plan-mode state and context entry types. */
 const CONTEXT_CUSTOM_TYPE = "plan-mode-v2-context";
 const STATE_CUSTOM_TYPE = "plan-mode-v2";
 
@@ -62,13 +58,17 @@ interface PlanModeState {
   profile?: string;
 }
 
+/** pi's thinking level union, derived from the extension API surface. */
+type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
+
 export default function (pi: ExtensionAPI): void {
   let planModeEnabled = false;
   let toolsBeforePlanMode: string[] | undefined;
-  let searchToolRegisteredByUs = false;
   let activeProfileName: string | undefined;
   let activeProfile: PlanModeProfile | undefined;
-  /** sourceInfo.source of the tools THIS extension registers (web_search, plan_clear). */
+  /** Thinking level captured on entry, restored when plan mode turns off. */
+  let savedThinkingLevel: ThinkingLevel | undefined;
+  /** sourceInfo.source of the tools THIS extension registers (plan_clear). */
   const ownToolSources = new Map<string, string>();
 
   /** Gate label used in block reasons and status, e.g. "plan mode (julia)". */
@@ -76,12 +76,21 @@ export default function (pi: ExtensionAPI): void {
     return activeProfileName ? `plan mode (${activeProfileName})` : "plan mode";
   }
 
+  /**
+   * Tools available while plan mode is active. `web_search` is included
+   * only when pi or another extension already provides it — plan mode no
+   * longer bundles a search tool of its own.
+   */
   function planModeTools(): string[] {
     const base = ["read", "grep", "find", "ls", "bash", "edit", "write", "plan_clear"];
     const available = new Set(pi.getAllTools().map((t) => t.name));
     if (available.has("web_search")) base.push("web_search");
     const { tools } = buildPlanModeTools(base, activeProfile, available);
     return tools;
+  }
+
+  function hasWebSearchTool(): boolean {
+    return pi.getAllTools().some((t) => t.name === "web_search");
   }
 
   /**
@@ -152,7 +161,7 @@ export default function (pi: ExtensionAPI): void {
     }
     ctx.ui.setWidget(
       "plan-mode",
-      buildWidgetLines(content, planFile, getCollapsedLines(config), TOGGLE_KEY, ctx.ui.theme),
+      buildWidgetLines(content, planFile, TOGGLE_KEY, ctx.ui.theme),
     );
   }
 
@@ -204,6 +213,19 @@ export default function (pi: ExtensionAPI): void {
   }
 
   /**
+   * Apply the configured `reasoningEffort` as the session thinking level
+   * while plan mode is on, remembering the previous level to restore.
+   * pi clamps to the current model's capabilities, so unknown/unsupported
+   * values degrade gracefully.
+   */
+  function applyThinkingEffort(ctx: ExtensionContext): void {
+    if (savedThinkingLevel !== undefined) return; // already applied
+    savedThinkingLevel = pi.getThinkingLevel();
+    const effort = loadConfig(ctx.cwd).reasoningEffort;
+    if (effort) pi.setThinkingLevel(effort);
+  }
+
+  /**
    * Enter plan mode, optionally with a named profile. Returns false (and
    * leaves plan mode off) when the profile is unknown. Warns about profile
    * tools that do not exist in the current tool set.
@@ -211,13 +233,13 @@ export default function (pi: ExtensionAPI): void {
   function enablePlanMode(ctx: ExtensionContext, profileName?: string): boolean {
     const { canonicalName, profile } = resolveProfile(ctx, profileName);
     if (profileName && !profile) return false;
-    ensureSearchTool();
     if (toolsBeforePlanMode === undefined) toolsBeforePlanMode = pi.getActiveTools();
     activeProfileName = canonicalName;
     activeProfile = profile;
     warnUnknownProfileTools(ctx, canonicalName, profile);
     pi.setActiveTools(planModeTools());
     planModeEnabled = true;
+    applyThinkingEffort(ctx);
     persistState();
     updateStatus(ctx);
     refreshPlanWidget(ctx);
@@ -230,6 +252,10 @@ export default function (pi: ExtensionAPI): void {
     activeProfile = undefined;
     pi.setActiveTools(toolsBeforePlanMode ?? pi.getActiveTools());
     toolsBeforePlanMode = undefined;
+    if (savedThinkingLevel !== undefined) {
+      pi.setThinkingLevel(savedThinkingLevel);
+      savedThinkingLevel = undefined;
+    }
     ctx.ui.setWidget("plan-mode", undefined);
     updateStatus(ctx);
     persistState();
@@ -359,7 +385,8 @@ export default function (pi: ExtensionAPI): void {
             `Profile: ${activeProfileName ?? "none (default)"}${activeDesc}`,
             `Available profiles: ${profileNames.length > 0 ? profileNames.join(", ") : "(none)"}`,
             `Plan file: ${planFile}`,
-            `Web search: ${config.apiKey ? "configured" : "not configured (set DEEPSEEK_API_KEY or \"apiKey\" in .pi/plan-mode.json)"}`,
+            `Web search: ${hasWebSearchTool() ? "available (from pi or another extension)" : "not available (no web_search tool installed)"}`,
+            `Thinking effort: ${config.reasoningEffort ?? "default (no override)"}`,
             `Todos: ${hasTodoTool() ? "available (rpiv-todo)" : "NOT installed — /plan go is disabled (`pi install @juicesharp/rpiv-todo`)"}`,
           ].join("\n"),
           "info",
@@ -435,149 +462,14 @@ export default function (pi: ExtensionAPI): void {
   /* Tools                                                             */
   /* ---------------------------------------------------------------- */
 
-  // Approximate USD pricing for deepseek-v4-flash (tokens -> cost).
-  const USD_PER_TOKEN = {
-    input: 0.14 / 1_000_000,
-    cachedInput: 0.003 / 1_000_000,
-    output: 0.28 / 1_000_000,
-  };
-
-  function toPiUsage(usage: NonNullable<DeepSeekSearchResult["usage"]>) {
-    const inputCost = usage.inputTokens * USD_PER_TOKEN.input;
-    const cachedCost = (usage.cachedTokens ?? 0) * USD_PER_TOKEN.cachedInput;
-    const outputCost = usage.outputTokens * USD_PER_TOKEN.output;
-    return {
-      input: usage.inputTokens,
-      output: usage.outputTokens,
-      cacheRead: usage.cachedTokens ?? 0,
-      cacheWrite: 0,
-      reasoning: usage.reasoningTokens ?? 0,
-      totalTokens: usage.totalTokens,
-      cost: {
-        input: inputCost,
-        cacheRead: cachedCost,
-        cacheWrite: 0,
-        output: outputCost,
-        total: inputCost + cachedCost + outputCost,
-      },
-    };
-  }
-
-  function buildSearchContent(result: DeepSeekSearchResult, query: string): string {
-    const parts: string[] = [`Web search results for "${query}":\n`];
-    if (result.answer) parts.push(result.answer);
-    if (result.sources.length > 0) {
-      parts.push("\nSources:");
-      for (const s of result.sources) parts.push(`- ${s}`);
-    }
-    const searches = [
-      ...new Set(
-        result.actions
-          .filter((a) => a.type === "search" && a.queries && a.queries.length > 0)
-          .flatMap((a) => a.queries as string[]),
-      ),
-    ];
-    if (searches.length > 0) parts.push(`\nSearch actions: ${searches.join(" | ")}`);
-    return parts.join("\n");
-  }
-
   /**
    * Record the sourceInfo.source of a tool we just registered, so the gate
-   * can tell our own web_search/plan_clear apart from lookalikes registered
-   * by other extensions under the same name.
+   * can tell our own plan_clear apart from lookalikes registered by other
+   * extensions under the same name.
    */
   function captureOwnToolSource(name: string): void {
     const t = pi.getAllTools().find((x) => x.name === name);
     if (t?.sourceInfo?.source) ownToolSources.set(name, t.sourceInfo.source);
-  }
-
-  /**
-   * Register our own DeepSeek-backed `web_search` tool. Only used when no
-   * other extension already provides one (e.g. pi-deepseek-search).
-   */
-  function registerSearchTool(): void {
-    pi.registerTool({
-      name: "web_search",
-      label: "Web Search (DeepSeek)",
-      description:
-        "Search the web via DeepSeek's server-side web search. Returns a synthesized answer with citations plus the search actions performed. Use for up-to-date, time-sensitive, or external information during planning.",
-      promptSnippet: "Search the web (DeepSeek-backed) for up-to-date or external information",
-      promptGuidelines: [
-        "Use web_search when the user asks about time-sensitive or external information that is not in the local context.",
-        "After a web_search call, base your answer on the returned content and cite the listed sources.",
-      ],
-      parameters: Type.Object({
-        query: Type.String({ description: "Search query. Use specific keywords." }),
-      }),
-      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-        const apiKey = await resolveSearchApiKey(ctx);
-        if (!apiKey) {
-          throw new Error(
-            'No DeepSeek API key for web search. Set DEEPSEEK_API_KEY, add "apiKey" to .pi/plan-mode.json, or configure the deepseek provider (/login deepseek).',
-          );
-        }
-        const config = loadConfig(ctx.cwd);
-        try {
-          const result = await deepseekSearch({
-            apiKey,
-            query: params.query,
-            signal,
-            baseUrl: config.baseUrl,
-            model: config.model,
-            timeoutMs: config.searchTimeoutMs,
-            reasoningEffort: config.reasoningEffort,
-          });
-          const usage = result.usage;
-          return {
-            content: [{ type: "text", text: buildSearchContent(result, params.query) }],
-            details: {
-              query: params.query,
-              actions: result.actions,
-              sources: result.sources,
-              model: result.model,
-            },
-            usage: usage ? toPiUsage(usage) : undefined,
-          };
-        } catch (error) {
-          if (isAbort(error)) {
-            return {
-              content: [{ type: "text", text: "The web search was cancelled." }],
-              details: { query: params.query, cancelled: true },
-            };
-          }
-          throw error;
-        }
-      },
-    });
-  }
-
-  /** Resolve a DeepSeek API key: config -> env -> pi's deepseek provider auth. */
-  async function resolveSearchApiKey(ctx: ExtensionContext): Promise<string | undefined> {
-    const fromConfig = loadConfig(ctx.cwd).apiKey;
-    if (fromConfig) return fromConfig;
-    try {
-      const fromProvider = await ctx.modelRegistry.getApiKeyForProvider("deepseek");
-      if (fromProvider) return fromProvider;
-    } catch {
-      // deepseek provider may not be configured
-    }
-    try {
-      const auth = await ctx.modelRegistry.getProviderAuth("deepseek");
-      return auth?.auth?.apiKey;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** Make sure a `web_search` tool exists before enabling plan mode. */
-  function ensureSearchTool(): void {
-    if (searchToolRegisteredByUs) return;
-    const hasWebSearch = pi.getAllTools().some((t) => t.name === "web_search");
-    if (!hasWebSearch) {
-      registerSearchTool();
-      searchToolRegisteredByUs = true;
-      captureOwnToolSource("web_search");
-    }
   }
 
   pi.registerTool({
@@ -646,7 +538,7 @@ export default function (pi: ExtensionAPI): void {
         block: true,
         reason:
           `[${label}] Tool "${event.toolName}" is not available in plan mode. ` +
-          `Only read/grep/find/ls, web_search, read-only bash${activeProfile ? ", and profile tools" : ""}, and edits to the plan file are allowed.\n` +
+          `Only read/grep/find/ls${sourceByName.has("web_search") ? ", web_search" : ""}, read-only bash${activeProfile ? ", and profile tools" : ""}, and edits to the plan file are allowed.\n` +
           `Run /plan to leave plan mode, or /plan go to execute the plan with full access.`,
       };
     }
@@ -685,8 +577,9 @@ export default function (pi: ExtensionAPI): void {
         };
       }
     }
-    // web_search is exempt: it may be self-registered or provided by another
-    // extension (e.g. pi-deepseek-search), both of which are legitimate.
+    // web_search is exempt from the provenance check: it is provided by pi
+    // or another extension and only enters the plan-mode tool set when it
+    // actually exists.
 
     if (isToolCallEventType("bash", event)) {
       if (!isSafeCommand(event.input.command, activeProfile?.bash)) {
@@ -752,7 +645,9 @@ export default function (pi: ExtensionAPI): void {
           "",
           "Available tools:",
           "- read, grep, find, ls — explore the codebase",
-          "- web_search — DeepSeek-backed web search for external/up-to-date information",
+          ...(hasWebSearchTool()
+            ? ["- web_search — external/up-to-date information (provided by pi or another extension)"]
+            : []),
           "- bash — read-only only; see BASH RULES below (enforced by the gate — a blocked command never runs)",
           "- edit, write — ONLY on the plan file",
           "- plan_clear — reset the plan for a brand-new task (asks the user to confirm)",
@@ -768,7 +663,7 @@ export default function (pi: ExtensionAPI): void {
           "Guidelines:",
           "- Keep the plan actionable: goal, constraints/context, concrete steps.",
           "- Structure the plan with concrete checklist steps (- [ ]): at execution time (/plan go) each step becomes a todo that tracks progress.",
-          "- Research first (read files, web_search), then write.",
+          "- Research first (read files" + (hasWebSearchTool() ? ", web_search" : "") + "), then write.",
           "- If the user's request clearly starts an ENTIRELY NEW task unrelated to the current plan, call plan_clear (it asks the user to confirm) instead of editing the existing plan in place.",
           "- If the user asks you to do real work, remind them to run /plan go to execute the plan.",
         ].join("\n"),
@@ -827,9 +722,9 @@ export default function (pi: ExtensionAPI): void {
       activeProfileName = canonicalName;
       activeProfile = profile;
       warnUnknownProfileTools(ctx, canonicalName, profile);
-      ensureSearchTool();
       if (toolsBeforePlanMode === undefined) toolsBeforePlanMode = pi.getActiveTools();
       pi.setActiveTools(planModeTools());
+      applyThinkingEffort(ctx);
       ensurePlanFile(ctx.cwd);
       updateStatus(ctx);
       refreshPlanWidget(ctx);

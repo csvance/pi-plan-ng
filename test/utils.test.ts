@@ -6,11 +6,8 @@ import {
   buildMarkdownTheme,
   buildPlanModeTools,
   buildWidgetLines,
-  cleanQueries,
-  cleanUrl,
   describePlanModeBashRules,
   expandToolEntry,
-  getCollapsedLines,
   getPlanFilePath,
   isAllowedWritePath,
   isSafeCommand,
@@ -260,42 +257,27 @@ describe("config helpers", () => {
     assert.equal(getPlanFilePath("/proj", { planFile: "docs/plan.md" }), "/proj/docs/plan.md");
     assert.equal(getPlanFilePath("/proj", { planFile: "/abs/plan.md" }), "/abs/plan.md");
   });
-
-  it("getCollapsedLines defaults to 5 and clamps invalid values", () => {
-    assert.equal(getCollapsedLines({}), 5);
-    assert.equal(getCollapsedLines({ collapsedLines: 3 }), 3);
-    assert.equal(getCollapsedLines({ collapsedLines: 0 }), 5);
-    assert.equal(getCollapsedLines({ collapsedLines: NaN }), 5);
-    assert.equal(getCollapsedLines({ collapsedLines: 2.9 }), 2);
-  });
 });
 
 describe("buildWidgetLines", () => {
   const longPlan = Array.from({ length: 40 }, (_, i) => `Line ${i + 1}`).join("\n");
 
   it("renders exactly one status line (never exceeds the TUI cap)", () => {
-    const lines = buildWidgetLines(longPlan, "/proj/PLAN.md", 5, "Alt+O", noopTheme);
+    const lines = buildWidgetLines(longPlan, "/proj/PLAN.md", "Alt+O", noopTheme);
     assert.equal(lines.length, 1);
     assert.ok(lines.length <= TUI_WIDGET_LINE_CAP);
   });
 
   it("status line shows plan path, line count, and the toggle key", () => {
-    const lines = buildWidgetLines(longPlan, "/proj/PLAN.md", 5, "Alt+O", noopTheme);
+    const lines = buildWidgetLines(longPlan, "/proj/PLAN.md", "Alt+O", noopTheme);
     assert.match(lines[0], /📋 Plan/);
     assert.match(lines[0], /\/proj\/PLAN\.md/);
     assert.match(lines[0], /40 lines/);
     assert.match(lines[0], /Alt\+O/);
   });
 
-  it("ignores collapsedLines (no body preview anymore)", () => {
-    const with1 = buildWidgetLines(longPlan, "/p", 1, "Alt+O", noopTheme);
-    const with8 = buildWidgetLines(longPlan, "/p", 8, "Alt+O", noopTheme);
-    assert.deepEqual(with1, with8);
-    assert.equal(with1.length, 1);
-  });
-
   it("handles empty content", () => {
-    const lines = buildWidgetLines("", "/p/PLAN.md", 5, "Alt+O", noopTheme);
+    const lines = buildWidgetLines("", "/p/PLAN.md", "Alt+O", noopTheme);
     assert.equal(lines.length, 1);
     assert.match(lines[0], /\/p\/PLAN\.md/);
   });
@@ -380,20 +362,5 @@ describe("theme builders", () => {
     assert.equal(ed.selectList.description("d"), "[muted:d]");
     assert.equal(ed.selectList.scrollInfo("s"), "[muted:s]");
     assert.equal(ed.selectList.noMatch("n"), "[muted:n]");
-  });
-});
-
-describe("search result parsing helpers", () => {
-  it("cleanQueries drops ws_call_id noise entries", () => {
-    assert.equal(cleanQueries("nope"), undefined);
-    assert.deepEqual(cleanQueries(["a", "b"]), ["a", "b"]);
-    assert.deepEqual(cleanQueries(["a", "ws_call_id=123"]), ["a"]);
-    assert.equal(cleanQueries(["ws_call_id=123"]), undefined);
-  });
-
-  it("cleanUrl strips the ws_call_id fragment", () => {
-    assert.equal(cleanUrl("https://x.com/a#ws_call_id=9"), "https://x.com/a");
-    assert.equal(cleanUrl("https://x.com"), "https://x.com");
-    assert.equal(cleanUrl(42), undefined);
   });
 });

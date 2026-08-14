@@ -1,7 +1,7 @@
 {
   "name": "pi-plan-ng",
   "version": "0.1.0",
-  "description": "Claude Code-style plan mode for pi: restricted planning loop with a persistent PLAN.md, compact plan widget with Alt+O full-screen view, DeepSeek web search, and /plan go execution tracked via todos (rpiv-todo).",
+  "description": "Claude Code-style plan mode for pi: restricted planning loop with a persistent PLAN.md, profiles that bring in more execution/tool types (extra bash commands like julia, MCP tools like kaimon), configurable thinking effort, and /plan go execution tracked via todos (rpiv-todo).",
   "type": "module",
   "license": "MIT",
   "keywords": ["pi-package", "pi", "plan-mode", "extension", "planning"],
