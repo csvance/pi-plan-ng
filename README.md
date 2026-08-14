@@ -1,12 +1,12 @@
-# Plan Mode — a Claude Code-style planning extension for pi
+# pi-plan-ng — Plan Next Generation for pi
 
-Plan Mode turns pi into a focused **planning loop**: instead of implementing
+pi-plan-ng turns pi into a focused **planning loop**: instead of implementing
 on the first prompt, the agent researches, drafts a plan in `PLAN.md`, and
 refines it with you — then executes it on command with full tool access.
 
 The plan lives in a markdown file you can read, scroll, and edit in a
 **full-screen viewer** with rendered formatting. And because every planning
-session has different needs, Plan Mode is **extensible by design**: profiles
+session has different needs, pi-plan-ng is **extensible by design**: profiles
 let you open the door for extra bash commands (say, `julia`), extra tools
 (say, MCP servers like Kaimon), and extra writable paths — while everything
 else stays locked down. A configurable `reasoningEffort` sets how much
@@ -195,7 +195,7 @@ todos extension is missing.
 
 ## Web search
 
-Plan Mode doesn't bundle a search tool and needs no search configuration.
+pi-plan-ng doesn't bundle a search tool and needs no search configuration.
 When pi or another extension provides a `web_search` tool, it stays
 available in plan mode; otherwise the tool list simply omits it. Run
 `/plan status` to see what's available.
