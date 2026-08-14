@@ -42,6 +42,7 @@ import {
   type DeepSeekSearchResult,
   type PlanModeProfile,
 } from "./utils.ts";
+import { openPlanViewer } from "./plan-view.ts";
 
 /**
  * Tools available while plan mode is active (computed dynamically because
@@ -412,34 +413,20 @@ export default function (pi: ExtensionAPI): void {
   /* ---------------------------------------------------------------- */
 
   /**
-   * Open the plan file in the full-screen editor for viewing, scrolling,
-   * and editing. pi's TUI caps widget arrays at 10 lines, so this is the
-   * way to see the entire plan. Saving writes the changes back to the plan
-   * file; cancelling (Esc) leaves it untouched.
+   * Open the plan in the full-screen viewer: rendered markdown by default,
+   * `e` toggles into the editor (Enter saves, Esc cancels — same semantics
+   * as the old plain-editor view). Works whether or not plan mode is on.
    */
   async function openPlanView(ctx: ExtensionContext): Promise<void> {
     const planFile = ensurePlanFile(ctx.cwd);
-    if (!ctx.hasUI) {
-      ctx.ui.notify(`Plan file: ${planFile}`, "info");
-      return;
-    }
-    let content: string;
-    try {
-      content = readFileSync(planFile, "utf8");
-    } catch {
-      content = PLAN_TEMPLATE;
-    }
-    const updated = await ctx.ui.editor(`Plan — ${planFile}`, content);
-    if (updated === undefined) return; // cancelled — no changes
-    if (updated !== content) {
-      writeFileSync(planFile, updated, "utf8");
+    await openPlanViewer(ctx, planFile, (text) => {
       if (planModeEnabled) refreshPlanWidget(ctx);
       ctx.ui.notify("Plan updated.", "info");
-    }
+    });
   }
 
   pi.registerShortcut("alt+o", {
-    description: "Open plan in full-screen editor (view/scroll/edit)",
+    description: "Open plan in full-screen viewer (rendered markdown; e to edit)",
     handler: (ctx) => void openPlanView(ctx),
   });
 
@@ -757,7 +744,7 @@ export default function (pi: ExtensionAPI): void {
           "[PLAN MODE ACTIVE]",
           "You are in PLAN MODE: you research and write a plan; you do NOT implement anything.",
           "",
-          `Plan file: ${planFile} — the source of truth. The UI shows a compact preview live; ${TOGGLE_KEY} opens the full plan in an editor (view/scroll/edit).`,
+          `Plan file: ${planFile} — the source of truth. The UI shows a one-line plan status; ${TOGGLE_KEY} opens the full plan viewer (rendered markdown — scroll, and press e to edit).`,
           ...(activeProfileName
             ? [`Profile: ${activeProfileName}${activeProfile?.description ? ` — ${activeProfile.description}` : ""}. Its extra tools, bash commands, and write paths are allowed in addition to the defaults.`]
             : []),

@@ -5,7 +5,9 @@
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { EditorTheme, MarkdownTheme } from "@earendil-works/pi-tui";
 
 /* ------------------------------------------------------------------ */
 /* Safe bash                                                           */
@@ -538,6 +540,49 @@ export interface PlanWidgetTheme {
 }
 
 /**
+ * Build a `MarkdownTheme` from a pi `Theme` instance (instance-based, so
+ * runtime theme switches are respected; pi's own `getMarkdownTheme()` binds
+ * the module-global theme). Used by the full-screen plan viewer's pi-tui
+ * `Markdown` component. Type-only import of `MarkdownTheme` keeps utils.ts
+ * runtime-dependency-free.
+ */
+export function buildMarkdownTheme(theme: Theme): MarkdownTheme {
+  return {
+    heading: (text) => theme.fg("mdHeading", text),
+    link: (text) => theme.fg("mdLink", text),
+    linkUrl: (text) => theme.fg("mdLinkUrl", text),
+    code: (text) => theme.fg("mdCode", text),
+    codeBlock: (text) => theme.fg("mdCodeBlock", text),
+    codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
+    quote: (text) => theme.fg("mdQuote", text),
+    quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
+    hr: (text) => theme.fg("mdHr", text),
+    listBullet: (text) => theme.fg("mdListBullet", text),
+    bold: (text) => theme.bold(text),
+    italic: (text) => theme.italic(text),
+    underline: (text) => theme.underline(text),
+    strikethrough: (text) => theme.strikethrough(text),
+  };
+}
+
+/**
+ * `EditorTheme` for the embedded plan editor — mirrors pi's own
+ * `getEditorTheme()` but bound to the passed `Theme` instance.
+ */
+export function buildEditorTheme(theme: Theme): EditorTheme {
+  return {
+    borderColor: (text) => theme.fg("borderMuted", text),
+    selectList: {
+      selectedPrefix: (text) => theme.fg("accent", text),
+      selectedText: (text) => theme.fg("accent", text),
+      description: (text) => theme.fg("muted", text),
+      scrollInfo: (text) => theme.fg("muted", text),
+      noMatch: (text) => theme.fg("muted", text),
+    },
+  };
+}
+
+/**
  * pi's TUI caps widget line arrays at this many lines
  * (`InteractiveMode.MAX_WIDGET_LINES`); beyond it, the TUI appends its own
  * "(widget truncated)" marker. Keep every widget within this cap.
@@ -545,34 +590,29 @@ export interface PlanWidgetTheme {
 export const TUI_WIDGET_LINE_CAP = 10;
 
 /**
- * Build the plan widget lines: header (1) + up to `collapsedLines` plan
- * lines + hint (1) = always ≤ `TUI_WIDGET_LINE_CAP`. The full plan is too
- * large for the widget, so the hint points at the full-screen editor view
- * (`Alt+O` / `/plan open`).
+ * Build the plan widget: a single status line showing the plan file, the
+ * line count, and the toggle key for the full-screen viewer. One line stays
+ * far under the TUI's widget cap (`TUI_WIDGET_LINE_CAP`); the full plan is
+ * shown in the viewer (`Alt+O` / `/plan open`).
+ *
+ * `collapsedLines` is accepted for backwards compatibility (the config key
+ * is still parsed) but no longer used — there is no body preview.
  */
 export function buildWidgetLines(
   planContent: string,
   planFile: string,
-  collapsedLines: number,
+  _collapsedLines: number,
   toggleKey: string,
   theme: PlanWidgetTheme,
 ): string[] {
-  const lines = planContent.split("\n");
-  const total = lines.length;
-  const bodyLimit = Math.min(Math.max(collapsedLines, 1), TUI_WIDGET_LINE_CAP - 2);
+  const total = planContent.split("\n").length;
   const header =
     theme.bold("📋 Plan") +
     " " +
     theme.fg("muted", planFile) +
     " " +
     theme.fg("dim", `· ${total} lines · ${toggleKey} to view`);
-  const body = lines.slice(0, bodyLimit).map((l) => "  " + (l === "" ? " " : l));
-  if (total <= bodyLimit) return [header, ...body];
-  const hint = theme.fg(
-    "dim",
-    `  … ${total - bodyLimit} more line(s) — ${toggleKey} to view the full plan`,
-  );
-  return [header, ...body, hint];
+  return [header];
 }
 
 /* ------------------------------------------------------------------ */

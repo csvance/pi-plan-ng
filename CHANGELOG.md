@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **One-line plan widget**: the compact preview is gone — the widget above
+  the editor is now a single status line (`📋 Plan <path> · N lines ·
+  Alt+O to view`). The `collapsedLines` config key is still parsed but no
+  longer has any effect.
+- **Full-screen plan viewer**: `Alt+O` / `/plan open` now opens a single
+  full-screen viewer with two modes toggled in place with `e` — a
+  **rendered markdown view** (formatted headings, lists, task checkboxes,
+  code blocks, tables; scroll with `↑`/`↓`, `ctrl+PageUp`/`ctrl+PageDown`,
+  `g`/`G`; plain PageUp/PageDown remain pi's transcript-scroll keys unless
+  `tui.altScreen.*` is remapped) and the **edit mode** (Shift+Enter for
+  newlines, Enter saves and returns to the rendered view, Esc cancels).
+
 ### Security
 
 - **Command-gate hardening (closes `AUDIT.md` L1–L8)**:

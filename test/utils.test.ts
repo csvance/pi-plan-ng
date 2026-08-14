@@ -1,6 +1,9 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
+  buildEditorTheme,
+  buildMarkdownTheme,
   buildPlanModeTools,
   buildWidgetLines,
   cleanQueries,
@@ -269,37 +272,70 @@ describe("config helpers", () => {
 describe("buildWidgetLines", () => {
   const longPlan = Array.from({ length: 40 }, (_, i) => `Line ${i + 1}`).join("\n");
 
-  it("never exceeds the TUI widget line cap", () => {
+  it("renders exactly one status line (never exceeds the TUI cap)", () => {
     const lines = buildWidgetLines(longPlan, "/proj/PLAN.md", 5, "Alt+O", noopTheme);
-    assert.ok(lines.length <= TUI_WIDGET_LINE_CAP, `got ${lines.length} lines`);
-    assert.ok(lines.length >= 2);
+    assert.equal(lines.length, 1);
+    assert.ok(lines.length <= TUI_WIDGET_LINE_CAP);
   });
 
-  it("includes a header and a hint pointing at the full-screen view", () => {
+  it("status line shows plan path, line count, and the toggle key", () => {
     const lines = buildWidgetLines(longPlan, "/proj/PLAN.md", 5, "Alt+O", noopTheme);
     assert.match(lines[0], /📋 Plan/);
+    assert.match(lines[0], /\/proj\/PLAN\.md/);
     assert.match(lines[0], /40 lines/);
-    assert.match(lines[lines.length - 1], /Alt\+O/);
-    assert.match(lines[lines.length - 1], /more line/);
+    assert.match(lines[0], /Alt\+O/);
   });
 
-  it("renders short plans fully without a hint", () => {
-    const lines = buildWidgetLines("# Hi", "/proj/PLAN.md", 5, "Alt+O", noopTheme);
-    assert.equal(lines.length, 2);
-    assert.equal(lines[1], "  # Hi");
-  });
-
-  it("respects collapsedLines within the cap", () => {
+  it("ignores collapsedLines (no body preview anymore)", () => {
     const with1 = buildWidgetLines(longPlan, "/p", 1, "Alt+O", noopTheme);
     const with8 = buildWidgetLines(longPlan, "/p", 8, "Alt+O", noopTheme);
-    assert.ok(with1.length < with8.length);
-    assert.ok(with8.length <= TUI_WIDGET_LINE_CAP);
+    assert.deepEqual(with1, with8);
+    assert.equal(with1.length, 1);
   });
 
   it("handles empty content", () => {
     const lines = buildWidgetLines("", "/p/PLAN.md", 5, "Alt+O", noopTheme);
-    assert.ok(lines.length >= 1);
-    assert.ok(lines.length <= TUI_WIDGET_LINE_CAP);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /\/p\/PLAN\.md/);
+  });
+});
+
+describe("theme builders", () => {
+  /** Theme stub: colors and styles as bracket tags, so assertions stay plain-text. */
+  const themeStub = {
+    fg: (color: string, text: string) => `[${color}:${text}]`,
+    bold: (t: string) => `[b:${t}]`,
+    italic: (t: string) => `[i:${t}]`,
+    underline: (t: string) => `[u:${t}]`,
+    strikethrough: (t: string) => `[s:${t}]`,
+  } as unknown as Theme;
+
+  it("buildMarkdownTheme maps every markdown element to its md* color/style", () => {
+    const md = buildMarkdownTheme(themeStub);
+    assert.equal(md.heading("H"), "[mdHeading:H]");
+    assert.equal(md.link("L"), "[mdLink:L]");
+    assert.equal(md.linkUrl("U"), "[mdLinkUrl:U]");
+    assert.equal(md.code("C"), "[mdCode:C]");
+    assert.equal(md.codeBlock("B"), "[mdCodeBlock:B]");
+    assert.equal(md.codeBlockBorder("X"), "[mdCodeBlockBorder:X]");
+    assert.equal(md.quote("Q"), "[mdQuote:Q]");
+    assert.equal(md.quoteBorder("Z"), "[mdQuoteBorder:Z]");
+    assert.equal(md.hr("-"), "[mdHr:-]");
+    assert.equal(md.listBullet("•"), "[mdListBullet:•]");
+    assert.equal(md.bold("x"), "[b:x]");
+    assert.equal(md.italic("x"), "[i:x]");
+    assert.equal(md.underline("x"), "[u:x]");
+    assert.equal(md.strikethrough("x"), "[s:x]");
+  });
+
+  it("buildEditorTheme mirrors pi's editor theme", () => {
+    const ed = buildEditorTheme(themeStub);
+    assert.equal(ed.borderColor("─"), "[borderMuted:─]");
+    assert.equal(ed.selectList.selectedPrefix(">"), "[accent:>]");
+    assert.equal(ed.selectList.selectedText("t"), "[accent:t]");
+    assert.equal(ed.selectList.description("d"), "[muted:d]");
+    assert.equal(ed.selectList.scrollInfo("s"), "[muted:s]");
+    assert.equal(ed.selectList.noMatch("n"), "[muted:n]");
   });
 });
 

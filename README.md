@@ -2,10 +2,10 @@
 
 `/plan` puts pi into a restricted **planning loop**: the agent researches
 (read files, DeepSeek-backed web search, read-only bash), states what it is
-about to update, and maintains a plan in a markdown file. A compact preview
-of the plan is shown live above the input box; **`Alt+O`** opens the full
-plan in a full-screen editor so you can scroll through, read, and edit the
-entire thing. `/plan go` hands the plan to the agent with full tool access
+about to update, and maintains a plan in a markdown file. A one-line status
+widget above the input box shows the plan file and line count; **`Alt+O`**
+opens the full plan in a full-screen **viewer** — rendered markdown,
+scrollable, with `e` toggling into the editor and back. `/plan go` hands the plan to the agent with full tool access
 to execute it. Execution progress is tracked with **todos** (the `todo`
 tool from [`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)):
 each checklist step in the plan becomes a todo, and the plan file itself
@@ -113,7 +113,7 @@ The extension is auto-discovered from `.pi/extensions/` on the next start
 | Enter / exit plan mode | `/plan` (toggles) |
 | Enter plan mode with a profile (e.g. julia) | `/plan julia` |
 | Execute the plan (exit plan mode + full tools) | `/plan go` |
-| Open the plan in a full-screen editor (view / scroll / edit) | `/plan open` or `Alt+O` |
+| Open the plan in the full-screen viewer (rendered; `e` toggles editing) | `/plan open` or `Alt+O` |
 | Reset the plan file (asks for confirmation) | `/plan clear` |
 | Show state (mode, plan file, search config) | `/plan status` |
 | Start pi already in plan mode | `pi --plan` or `pi --plan-profile <name>` |
@@ -321,19 +321,33 @@ start execution.
 
 ## Display
 
-A compact widget above the input box shows the plan preview:
+A one-line status widget above the input box shows the plan file, line
+count, and the `Alt+O` hint — the plan itself lives in the full-screen
+viewer.
 
-- **Always ≤ 10 lines** — pi's TUI caps widget line arrays at 10, so the
-  widget shows the plan title, the first `collapsedLines` lines (default 5,
-  configurable via `"collapsedLines"` in the config), and a hint.
-- **`Alt+O` / `/plan open`** opens the full plan in a full-screen editor:
-  scroll through every line, edit, and save — changes are written back to
-  the plan file and the widget refreshes. Cancelling (Esc) leaves the file
-  untouched. This works whether or not plan mode is currently on.
-- The footer shows `⏸ plan` while plan mode is on.
+**`Alt+O` / `/plan open`** opens the plan in a full-screen **viewer** with
+two modes, toggled in place with `e`:
 
-The widget and plan-mode state are persisted in the session
-(`pi.appendEntry`), so they survive `/reload` and session resume.
+- **View mode (default)** — the whole plan rendered as formatted markdown:
+  headings, lists, task checkboxes, code blocks, tables, and links, with
+  width-aware wrapping. Scroll with `↑`/`↓` (line), `ctrl+PageUp`/
+  `ctrl+PageDown` (page), or `g`/`G` (top/bottom). Plain `PageUp`/
+  `PageDown` are reserved by pi for scrolling the conversation transcript;
+  if you want them to scroll the plan instead, remap `tui.altScreen.pageUp`
+  / `tui.altScreen.pageDown` in your keybindings config — the viewer
+  already listens for the plain keys.
+- **Edit mode** (`e`) — the full plan editor (Shift+Enter for newlines).
+  `Enter` saves the changes back to the plan file, refreshes the widget,
+  and returns to the rendered view; `Esc` closes the viewer without saving.
+  The viewer works whether or not plan mode is currently on.
+
+The footer shows `⏸ plan` while plan mode is on. The widget and plan-mode
+state are persisted in the session (`pi.appendEntry`), so they survive
+`/reload` and session resume.
+
+> Note: the `collapsedLines` config key is still parsed for backwards
+> compatibility but no longer has any effect — there is no body preview in
+> the widget anymore.
 
 ## Development
 
@@ -366,7 +380,7 @@ gh auth login
 gh repo create pi-plan-ng --public --source=. --remote=origin --push
 
 # 4. set metadata
-gh repo edit --description "Claude Code-style plan mode for pi: PLAN.md workflow, DeepSeek web search, /plan go execution, full-screen plan view (Alt+O)" --add-topic pi-package
+gh repo edit --description "Claude Code-style plan mode for pi: PLAN.md workflow, DeepSeek web search, /plan go execution, full-screen plan viewer (Alt+O)" --add-topic pi-package
 ```
 
 After that, anyone can install it with
@@ -378,7 +392,7 @@ A ground-up rewrite of the official
 [`plan-mode` example](https://github.com/earendil-works/pi-mono/tree/main/examples/extensions/plan-mode)
 from [pi-mono](https://github.com/earendil-works/pi-mono), with a
 file-based `PLAN.md` workflow, DeepSeek-backed web search, `/plan go`
-execution, and a full-screen plan view. MIT licensed.
+execution, and a full-screen plan viewer with rendered markdown. MIT licensed.
 
 ## Notes
 
