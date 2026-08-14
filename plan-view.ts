@@ -107,8 +107,28 @@ export class PlanViewer implements Component, Focusable {
     this.markdown = new Markdown(content, 0, 0, mdTheme);
     this.editor = new Editor(buildViewportTui(tui, () => this.editorRows.value), editorTheme);
     this.editor.setText(content);
+    // pi-tui's setText places the cursor at the END of the document, so the
+    // editor's window would open at the bottom of the plan — start at the top.
+    this.resetEditorToTop(content);
     // Enter submits (saves + returns to the rendered view); Shift+Enter inserts a newline.
     this.editor.onSubmit = (text) => this.commit(text);
+  }
+
+  /**
+   * Move the editor cursor/window to the top of the plan. pi-tui's public
+   * `setText()` always places the cursor at the end of the document
+   * (`setTextInternal` defaults to `cursorPlacement: "end"`), and the
+   * editor's render window follows the cursor — so without this the editor
+   * opens at the bottom of the plan. `setTextInternal(text, "start")` puts
+   * the cursor at (0,0) and resets the scroll offset. It is declared
+   * private but pinned by pi-tui's `editor.d.ts`, hence the typed escape
+   * hatch; it does not touch the buffer or the undo stack.
+   */
+  private resetEditorToTop(text?: string): void {
+    const internal = this.editor as unknown as {
+      setTextInternal(text: string, placement: "start" | "end"): void;
+    };
+    internal.setTextInternal(text ?? this.editor.getText(), "start");
   }
 
   get focused(): boolean {
@@ -177,6 +197,8 @@ export class PlanViewer implements Component, Focusable {
       return;
     }
     if (data === "e") {
+      // Every entry into edit mode starts at the top of the plan.
+      this.resetEditorToTop();
       this.mode = "edit";
       this.tui.requestRender();
       return;
@@ -192,9 +214,15 @@ export class PlanViewer implements Component, Focusable {
     this.refreshContent(text);
   }
 
-  /** Re-sync both modes after a save (view shows what was saved, editor keeps the buffer). */
+  /**
+   * Re-sync both modes after a save (view shows what was saved, editor
+   * keeps the buffer). pi-tui's `submitValue()` wipes the editor buffer on
+   * submit, so it must be refilled — parked at the top for the next edit
+   * session.
+   */
   private refreshContent(text: string): void {
     this.markdown.setText(text);
+    this.resetEditorToTop(text);
     this.scrollOffset = 0;
     this.mode = "view";
     this.tui.requestRender();

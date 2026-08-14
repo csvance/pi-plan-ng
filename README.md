@@ -337,7 +337,8 @@ two modes, toggled in place with `e`:
   / `tui.altScreen.pageDown` in your keybindings config — the viewer
   already listens for the plain keys.
 - **Edit mode** (`e`) — the full plan editor, also full-screen (Shift+Enter
-  for newlines, `ctrl+PageUp`/`ctrl+PageDown` pages). `Enter` saves the
+  for newlines, `ctrl+PageUp`/`ctrl+PageDown` pages). It always opens at
+  the **top of the plan**. `Enter` saves the
   changes back to the plan file, refreshes the widget, and returns to the
   rendered view; `Esc` closes the viewer without saving. The viewer works
   whether or not plan mode is currently on.

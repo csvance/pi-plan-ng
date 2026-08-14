@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code blocks, tables; scroll with `↑`/`↓`, `ctrl+PageUp`/`ctrl+PageDown`,
   `g`/`G`; plain PageUp/PageDown remain pi's transcript-scroll keys unless
   `tui.altScreen.*` is remapped) and the **edit mode** (also full-screen;
-  Shift+Enter for newlines, `ctrl+PageUp`/`ctrl+PageDown` pages, Enter
-  saves and returns to the rendered view, Esc cancels).
+  opens at the top of the plan, Shift+Enter for newlines,
+  `ctrl+PageUp`/`ctrl+PageDown` pages, Enter saves and returns to the
+  rendered view, Esc cancels).
 
 ### Security
 
