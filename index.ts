@@ -11,8 +11,9 @@
  *
  * `/plan go` exits plan mode and executes the plan with full tool access.
  * Execution progress is tracked with todos (the `todo` tool from
- * pi-agent-extensions): each plan step becomes a todo tagged `plan`, and
- * the plan file itself is not edited while executing.
+ * @juicesharp/rpiv-todo): each plan step becomes a todo marked with
+ * metadata tags ["plan"], and the plan file itself is not edited while
+ * executing.
  * `/plan <profile>` enters plan mode with a user-defined profile that
  * extends the allowlist (extra tools, bash commands, write paths) — see
  * the "profiles" key in the plan-mode config.
@@ -82,7 +83,7 @@ export default function (pi: ExtensionAPI): void {
   }
 
   /**
-   * True when the `todo` tool (pi-agent-extensions) is available.
+   * True when the `todo` tool (@juicesharp/rpiv-todo) is available.
    * `/plan go` hard-requires it: todos track execution progress instead of
    * editing checkboxes in the plan file.
    */
@@ -245,8 +246,8 @@ export default function (pi: ExtensionAPI): void {
         [
           `Plan mode on. Plan file: ${getPlanFilePath(ctx.cwd, config)}`,
           todoOk
-            ? "Execution will track progress with todos (pi-agent-extensions)."
-            : 'WARNING: the todos extension is not installed (`pi install pi-agent-extensions`) — /plan go will not run until it is.',
+            ? "Execution will track progress with todos (rpiv-todo)."
+            : 'WARNING: the todos extension is not installed (`pi install @juicesharp/rpiv-todo`) — /plan go will not run until it is.',
         ].join("\n"),
         todoOk ? "info" : "warning",
       );
@@ -273,7 +274,7 @@ export default function (pi: ExtensionAPI): void {
       if (action === "go") {
         if (!hasTodoTool()) {
           ctx.ui.notify(
-            'Execution tracks progress with todos, but the todos extension is not installed. Install it with `pi install pi-agent-extensions`, then /reload.',
+            'Execution tracks progress with todos, but the todos extension is not installed. Install it with `pi install @juicesharp/rpiv-todo`, then /reload.',
             "warning",
           );
           return;
@@ -301,18 +302,18 @@ export default function (pi: ExtensionAPI): void {
               `Plan file: ${planFile} — the source of truth for WHAT to do.`,
               "",
               "TRACKING PROGRESS WITH TODOS:",
-              "- Call todo list-all first to see which todos already exist.",
-              '- If this plan was executed before, reuse the todos tagged "plan" that still match plan steps: update titles of changed steps (todo update) and delete stale ones (todo delete).',
-              '- Otherwise create one todo per step: todo create with title = the step text, body = relevant context from the plan, tags = ["plan"].',
+              '- Call todo {action:"list", includeDeleted:true} first to see which todos already exist.',
+              '- If this plan was executed before, reuse the plan todos (marker: metadata.tags includes "plan") that still match plan steps: update subject/status of changed steps (todo update) and delete stale ones (todo delete).',
+              '- Otherwise create one todo per step: todo {action:"create", subject:<step text>, description:<relevant plan context>, metadata:{tags:["plan"]}}.',
               "- Steps are the checklist items (- [ ]) in the plan file; if the plan has no checklist, break it into logical steps yourself.",
-              '- Claim a todo (todo claim) before starting it, close it when finished (todo update with status "closed"), and append brief notes on what was done (todo append).',
+              "- Mark a todo in_progress with an activeForm BEFORE starting it; mark it completed IMMEDIATELY when done — never batch completions. Record brief notes on what was done by rewriting the todo's description (todo get first if you need the current text).",
               "- Do NOT edit the plan file while executing — todos are the source of truth for step state.",
               "",
               "--- PLAN ---",
               content.trim(),
               "--- END PLAN ---",
               "",
-              "Start with the first step. When all todos are closed, summarize what was done.",
+              "Start with the first step. When all todos are completed, summarize what was done.",
             ].join("\n"),
             display: true,
           },
@@ -357,7 +358,7 @@ export default function (pi: ExtensionAPI): void {
             `Available profiles: ${profileNames.length > 0 ? profileNames.join(", ") : "(none)"}`,
             `Plan file: ${planFile}`,
             `Web search: ${config.apiKey ? "configured" : "not configured (set DEEPSEEK_API_KEY or \"apiKey\" in .pi/plan-mode.json)"}`,
-            `Todos: ${hasTodoTool() ? "available (pi-agent-extensions)" : "NOT installed — /plan go is disabled (`pi install pi-agent-extensions`)"}`,
+            `Todos: ${hasTodoTool() ? "available (rpiv-todo)" : "NOT installed — /plan go is disabled (`pi install @juicesharp/rpiv-todo`)"}`,
           ].join("\n"),
           "info",
         );

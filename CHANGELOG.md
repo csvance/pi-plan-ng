@@ -55,12 +55,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `/plan go` now tracks execution progress with todos (the `todo` tool from
-  [`pi-agent-extensions`](https://pi.dev/packages/pi-agent-extensions))
+  [`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo))
   instead of editing checkboxes in the plan file: on execution start the
-  agent creates one todo per plan step (tagged `plan`), reuses existing
-  plan todos across runs (updating/deleting stale entries), claims each
-  before starting, and closes it when done. The plan file is no longer
-  edited during execution — todos are the source of truth for step state.
+  agent lists existing todos (`{action:"list", includeDeleted:true}`),
+  creates one todo per plan step (marked with `metadata: {tags:["plan"]}`),
+  reuses existing plan todos across runs (updating/deleting stale
+  entries), marks each in_progress with an `activeForm` before starting,
+  and marks it completed when done. The plan file is no longer edited
+  during execution — todos are the source of truth for step state.
+- Execution tracking now targets the `todo` tool from
+  [`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)
+  (install: `pi install @juicesharp/rpiv-todo`) instead of
+  `pi-agent-extensions`: instructions and docs use the rpiv-todo
+  action-based schema (`create`/`update`/`list`/`get`/`delete`/`clear`
+  with `subject`/`description`/`activeForm`/`status`/`metadata`), the
+  `plan` marker is `metadata.tags: ["plan"]` (metadata merges additively
+  per key on update, so the marker survives later updates), the lifecycle
+  is pending → in_progress (with `activeForm`) → completed, and progress
+  notes are recorded by rewriting the task `description` — the previous
+  extension's actions, statuses, and call shapes no longer apply.
 - The todos extension is now a hard dependency: `/plan go` refuses to run
   without the `todo` tool, `/plan status` reports whether it is available,
   and entering plan mode warns when it is missing.

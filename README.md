@@ -7,8 +7,9 @@ of the plan is shown live above the input box; **`Alt+O`** opens the full
 plan in a full-screen editor so you can scroll through, read, and edit the
 entire thing. `/plan go` hands the plan to the agent with full tool access
 to execute it. Execution progress is tracked with **todos** (the `todo`
-tool from `pi-agent-extensions`): each checklist step in the plan becomes
-a todo, and the plan file itself is left untouched while executing.
+tool from [`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)):
+each checklist step in the plan becomes a todo, and the plan file itself
+is left untouched while executing.
 
 `/plan <profile>` enters plan mode with a user-defined **profile** that
 extends the restricted allowlist — extra tools (e.g. MCP tools), extra
@@ -77,12 +78,12 @@ Caveats:
 ### Dependencies
 
 Execution progress is tracked with the `todo` tool from
-[`pi-agent-extensions`](https://pi.dev/packages/pi-agent-extensions)
-(adapted from [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff)).
+[`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)
+([npm](https://www.npmjs.com/package/@juicesharp/rpiv-todo)).
 Install it once:
 
 ```bash
-pi install pi-agent-extensions
+pi install @juicesharp/rpiv-todo
 ```
 
 Unlike `web_search` (which has a built-in fallback), this is a **hard
@@ -287,28 +288,33 @@ of pi's configured `deepseek` provider (`/login deepseek`). Run
 - Persists across sessions and across `/plan` on/off toggles. It is never
   deleted implicitly.
 - While executing (`/plan go`), the plan file is **not** edited — each
-  checklist step becomes a todo (`.pi/todos/`) and progress is tracked
-there instead.
+  checklist step becomes a todo (tracked by the rpiv-todo `todo` tool)
+  and progress is tracked there instead.
 
 ## Execution tracking with todos
 
 `/plan go` hands the plan to the agent with full tool access. Instead of
 editing the plan file's checkboxes during execution, the agent tracks
 progress with the `todo` tool (requires
-[`pi-agent-extensions`](https://pi.dev/packages/pi-agent-extensions)):
+[`@juicesharp/rpiv-todo`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo)):
 
-1. On `/plan go`, the agent lists existing todos (`todo list-all`) and
-   reuses the ones tagged `plan` from a previous run — updating titles of
-   changed steps and deleting stale entries, so re-executing a plan does
-   not duplicate tasks.
-2. It creates one todo per checklist step (`- [ ]`) in the plan file —
-   title = the step, body = relevant context from the plan, tag = `plan`.
-   Plans without a checklist are broken into logical steps.
-3. As it works, it claims each todo before starting, appends brief notes
-   on what was done, and closes it when finished.
+1. On `/plan go`, the agent lists existing todos first
+   (`todo {action:"list", includeDeleted:true}`) and reuses the ones
+   marked as plan todos (`metadata.tags` includes `"plan"`) from a
+   previous run — updating subject/status of changed steps and deleting
+   stale entries, so re-executing a plan does not duplicate tasks.
+2. It creates one todo per checklist step (`- [ ]`) in the plan file:
+   `todo {action:"create", subject:<step text>, description:<relevant
+   context from the plan>, metadata:{tags:["plan"]}}`. Plans without a
+   checklist are broken into logical steps.
+3. As it works, it marks each todo in_progress with an `activeForm`
+   before starting it, records brief notes on what was done by rewriting
+   the todo's `description` (calling `todo {action:"get", id}` first if
+   it needs the current text), and marks it completed immediately when
+   done — never in batches.
 4. The plan file is left untouched — todos are the source of truth for
    step state. Check progress anytime with `/todos` (interactive list) or
-   `todo list-all`.
+   `todo {action:"list", includeDeleted:true}`.
 
 If the todos extension is missing, `/plan go` shows a warning and does not
 start execution.
