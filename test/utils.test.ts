@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
+import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   buildEditorTheme,
@@ -13,6 +16,7 @@ import {
   isAllowedWritePath,
   isSafeCommand,
   mergeProfiles,
+  resolvePlanFileIn,
   TUI_WIDGET_LINE_CAP,
 } from "../utils.ts";
 
@@ -495,6 +499,50 @@ describe("config helpers", () => {
     assert.equal(getPlanFilePath("/proj", {}), "/proj/PLAN.md");
     assert.equal(getPlanFilePath("/proj", { planFile: "docs/plan.md" }), "/proj/docs/plan.md");
     assert.equal(getPlanFilePath("/proj", { planFile: "/abs/plan.md" }), "/abs/plan.md");
+  });
+});
+
+describe("resolvePlanFileIn", () => {
+  it("accepts a plain relative name inside cwd", () => {
+    const proj = join(mkdtempSync(join(tmpdir(), "rpf-in-")), "proj");
+    mkdirSync(proj, { recursive: true });
+    assert.equal(resolvePlanFileIn(proj, "PLAN2.md"), join(proj, "PLAN2.md"));
+    assert.equal(resolvePlanFileIn(proj, "docs/plan.md"), join(proj, "docs/plan.md"));
+  });
+
+  it("rejects an empty name", () => {
+    assert.equal(resolvePlanFileIn("/proj", ""), null);
+    assert.equal(resolvePlanFileIn("/proj", "   "), null);
+  });
+
+  it("rejects a .. escape that resolves outside cwd", () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "rpf-out-"));
+    const proj = join(sandbox, "proj");
+    mkdirSync(proj, { recursive: true });
+    assert.equal(resolvePlanFileIn(proj, "../plan.md"), null);
+    assert.equal(resolvePlanFileIn(proj, "../../plan.md"), null);
+  });
+
+  it("rejects an absolute path outside cwd", () => {
+    assert.equal(resolvePlanFileIn("/proj", "/etc/plan.md"), null);
+    assert.equal(resolvePlanFileIn("/proj", "/tmp/plan.md"), null);
+  });
+
+  it("rejects an escape via a symlinked subdir (R9 parity)", () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "rpf-sym-"));
+    const proj = join(sandbox, "proj");
+    const outside = join(sandbox, "outside");
+    mkdirSync(proj, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(outside, join(proj, "link"));
+    // link resolves to ../outside, outside proj → rejected
+    assert.equal(resolvePlanFileIn(proj, "link/plan.md"), null);
+  });
+
+  it("accepts a name whose .. resolves back inside cwd", () => {
+    const proj = join(mkdtempSync(join(tmpdir(), "rpf-in-")), "proj");
+    mkdirSync(join(proj, "sub"), { recursive: true });
+    assert.equal(resolvePlanFileIn(proj, "sub/../plan.md"), join(proj, "plan.md"));
   });
 });
 

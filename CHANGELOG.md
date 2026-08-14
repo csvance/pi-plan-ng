@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-session plan file via `/plan file <name>`**: multiple agents in
+  the same repo can plan in parallel without stepping on each other.
+  `/plan file PLAN2.md` points this session at `PLAN2.md` (widget, `/plan
+  go`, `/plan open`, the edit/write gate, `plan_clear`, and the injected
+  instructions all follow it); `/plan file` with no name resets to the
+  default; `pi --plan-file <name>` starts plan mode on a named file. The
+  choice is per-process (isolated between agents) and persists across
+  toggles and session restarts. The file must resolve inside the project
+  (canonical check, AUDIT R9 parity — escapes are rejected).
+
 - **Denied bash commands now tell the agent exactly why**: the plan-mode
   gate's `block.reason` names the offending token (`sort -o`, `;`, `rm`,
   `git push`, …), the rule it violates, and what to change (e.g. the

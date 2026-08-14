@@ -81,9 +81,11 @@ pi install @juicesharp/rpiv-todo
 | Plan mode with a profile (e.g. julia) | `/plan julia` |
 | Open the plan in the full-screen viewer (`e` toggles editing) | `Alt+O` or `/plan open` |
 | Execute the plan (exit plan mode + full tools) | `/plan go` |
+| Pick this session's plan file (e.g. `PLAN2.md`) | `/plan file PLAN2.md` |
+| Reset the plan file to the default | `/plan file` |
 | Reset the plan file (asks for confirmation) | `/plan clear` |
 | Show state (mode, profile, effort, todos) | `/plan status` |
-| Start pi already in plan mode | `pi --plan` or `pi --plan-profile <name>` |
+| Start pi already in plan mode | `pi --plan`, `pi --plan-profile <name>`, or `pi --plan-file <name>` |
 
 ### The loop
 
@@ -129,6 +131,30 @@ optional:
 - **`planFile`** — plan file path, relative to the project root. Default:
   `PLAN.md` (created with a template on first entry).
 - **`profiles`** — named allowlist extensions, see below.
+
+### Multiple plan files
+
+By default every plan-mode session reads and writes `PLAN.md`. To let
+several agents plan in parallel **in the same repo** without stepping on
+each other, give each session its own plan file:
+
+- `/plan file PLAN2.md` — this session now reads/writes `PLAN2.md`
+  instead of `PLAN.md`. The widget, `/plan go`, `/plan open`, the
+  edit/write gate, `plan_clear`, and the agent's instructions all target
+  the chosen file.
+- `/plan file` (no operand) — reset back to the default (`PLAN.md`, or
+  the config `planFile`).
+- `pi --plan-file PLAN2.md` — start plan mode directly on a named file.
+
+The choice is **per process**, so two agents in the same repo are
+naturally isolated: agent A runs `/plan file A.md`, agent B runs
+`/plan file B.md`, and neither can write the other's file. The selected
+file persists across plan-mode toggles and session restarts until you
+change or reset it.
+
+The plan file must resolve **inside the project** (absolute paths or
+`..`/symlink escapes are rejected with a warning), so selecting a file can
+never widen plan mode's write scope beyond the repo.
 
 ### Profiles
 

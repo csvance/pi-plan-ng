@@ -21,13 +21,17 @@
  * `julia` bash command in a julia profile, or a `kaimon*` MCP tool set.
  * The config also accepts "reasoningEffort" to set the thinking level
  * used for planning turns (restored on exit).
+ * `/plan file <name>` picks this session's plan file (default PLAN.md),
+ * so multiple agents in the same repo can plan in parallel without
+ * stepping on each other; `/plan file` with no name resets to the default.
+ * The `--plan-file <name>` startup flag starts plan mode on a named file.
  * `/plan clear` resets the plan file (with confirmation).
  * The plan file is never deleted on exit/re-entry; only an explicit,
  * user-confirmed reset replaces it.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
@@ -43,6 +47,7 @@ import {
   isSymlink,
   loadConfig,
   PLAN_TEMPLATE,
+  resolvePlanFileIn,
   type PlanModeProfile,
 } from "./utils.ts";
 import { openPlanViewer } from "./plan-view.ts";
@@ -58,6 +63,8 @@ interface PlanModeState {
   toolsBeforePlanMode?: string[];
   /** Active profile name (undefined = default, no profile). */
   profile?: string;
+  /** Session-selected plan file, relative to cwd (undefined = default/config). */
+  planFile?: string;
 }
 
 /** pi's thinking level union, derived from the extension API surface. */
@@ -68,6 +75,13 @@ export default function (pi: ExtensionAPI): void {
   let toolsBeforePlanMode: string[] | undefined;
   let activeProfileName: string | undefined;
   let activeProfile: PlanModeProfile | undefined;
+  /**
+   * Session-selected plan file, relative to cwd. undefined = use the config
+   * default (planFile / PLAN.md). Set via `/plan file <name>` or the
+   * `--plan-file` flag; persists across plan-mode toggles and session
+   * restarts until changed or reset via `/plan file`.
+   */
+  let activePlanFile: string | undefined;
   /** Thinking level captured on entry, restored when plan mode turns off. */
   let savedThinkingLevel: ThinkingLevel | undefined;
   /** sourceInfo.source of the tools THIS extension registers (plan_clear). */
@@ -116,6 +130,12 @@ export default function (pi: ExtensionAPI): void {
     default: "",
   });
 
+  pi.registerFlag("plan-file", {
+    description: "Start in plan mode with the named plan file (relative to cwd)",
+    type: "string",
+    default: "",
+  });
+
   /* ---------------------------------------------------------------- */
   /* Helpers                                                           */
   /* ---------------------------------------------------------------- */
@@ -125,6 +145,7 @@ export default function (pi: ExtensionAPI): void {
       enabled: planModeEnabled,
       toolsBeforePlanMode,
       profile: activeProfileName,
+      planFile: activePlanFile,
     } satisfies PlanModeState);
   }
 
@@ -136,14 +157,25 @@ export default function (pi: ExtensionAPI): void {
   }
 
   /**
+   * The plan file for this session: the session-selected file when one is
+   * set via `/plan file` or `--plan-file`, otherwise the config default
+   * (config `planFile` / PLAN.md). Every plan-file concern routes through
+   * here, so the widget, `/plan go`/`clear`/`open`/`status`, plan_clear,
+   * the edit/write gate, and the injected prompt all target the same file.
+   */
+  function currentPlanFilePath(cwd: string): string {
+    if (activePlanFile !== undefined) return resolve(cwd, activePlanFile);
+    return getPlanFilePath(cwd, loadConfig(cwd));
+  }
+
+  /**
    * Ensure the plan file exists, creating the template if needed.
    * Synchronous on purpose: command/event handlers must not await across
    * a ctx lifetime (session replacement invalidates captured ctx
    * objects).
    */
   function ensurePlanFile(cwd: string): string {
-    const config = loadConfig(cwd);
-    const planFile = getPlanFilePath(cwd, config);
+    const planFile = currentPlanFilePath(cwd);
     mkdirSync(dirname(planFile), { recursive: true });
     // Never create the plan file through a symlink (dangling or live):
     // writeFileSync would follow it and clobber its target (AUDIT R6).
@@ -155,8 +187,7 @@ export default function (pi: ExtensionAPI): void {
 
   function refreshPlanWidget(ctx: ExtensionContext): void {
     if (!planModeEnabled) return;
-    const config = loadConfig(ctx.cwd);
-    const planFile = getPlanFilePath(ctx.cwd, config);
+    const planFile = currentPlanFilePath(ctx.cwd);
     let content: string;
     try {
       content = readFileSync(planFile, "utf8");
@@ -272,11 +303,10 @@ export default function (pi: ExtensionAPI): void {
     } else {
       ensurePlanFile(ctx.cwd);
       enablePlanMode(ctx);
-      const config = loadConfig(ctx.cwd);
       const todoOk = hasTodoTool();
       ctx.ui.notify(
         [
-          `Plan mode on. Plan file: ${getPlanFilePath(ctx.cwd, config)}`,
+          `Plan mode on. Plan file: ${currentPlanFilePath(ctx.cwd)}`,
           todoOk
             ? "Execution will track progress with todos (rpiv-todo)."
             : 'WARNING: the todos extension is not installed (`pi install @juicesharp/rpiv-todo`) — /plan go will not run until it is.',
@@ -292,16 +322,34 @@ export default function (pi: ExtensionAPI): void {
 
   pi.registerCommand("plan", {
     description:
-      "Toggle plan mode. Subcommands: go (execute plan), clear (reset plan), status, open. A profile name enters plan mode with that profile.",
+      "Toggle plan mode. Subcommands: go (execute plan), clear (reset plan), file <name> (pick this session's plan file), status, open. A profile name enters plan mode with that profile.",
     getArgumentCompletions: (prefix: string) => {
-      const builtins = ["go", "clear", "status", "open"];
+      const builtins = ["go", "clear", "status", "open", "file"];
       const profiles = Object.keys(loadConfig(process.cwd()).profiles ?? {});
-      return [...builtins, ...profiles]
+      const out = [...builtins, ...profiles]
         .filter((a) => a.startsWith(prefix))
         .map((a) => ({ value: a, label: a }));
+      // While completing the operand of `/plan file <partial>`, offer
+      // existing markdown files in the project root.
+      const fileMatch = /^file\s+(.*)$/i.exec(prefix);
+      if (fileMatch) {
+        const partial = fileMatch[1];
+        let md: string[] = [];
+        try {
+          md = readdirSync(process.cwd())
+            .filter((f) => f.endsWith(".md") && f.startsWith(partial));
+        } catch {
+          /* cwd unreadable — no file suggestions */
+        }
+        for (const f of md) out.push({ value: f, label: f });
+      }
+      return out;
     },
     handler: async (args, ctx) => {
-      const action = (args ?? "").trim().toLowerCase();
+      // Split on whitespace so `file <name>` preserves the filename's case
+      // (the first token is the subcommand; the rest is raw).
+      const [head, ...rest] = (args ?? "").trim().split(/\s+/);
+      const action = head.toLowerCase();
 
       if (action === "go") {
         if (!hasTodoTool()) {
@@ -384,17 +432,18 @@ export default function (pi: ExtensionAPI): void {
 
       if (action === "status") {
         const config = loadConfig(ctx.cwd);
-        const planFile = getPlanFilePath(ctx.cwd, config);
+        const planFile = currentPlanFilePath(ctx.cwd);
         const profileNames = Object.keys(config.profiles ?? {});
         const activeDesc = activeProfile?.description ? ` — ${activeProfile.description}` : "";
         const activeGrants = activeProfile ? describeProfileGrants(activeProfile) : [];
+        const customFile = activePlanFile !== undefined;
         ctx.ui.notify(
           [
             `Plan mode: ${planModeEnabled ? "ON" : "OFF"}`,
             `Profile: ${activeProfileName ?? "none (default)"}${activeDesc}`,
             ...(activeGrants.length ? [`Grants: ${activeGrants.join("; ")}`] : []),
             `Available profiles: ${profileNames.length > 0 ? profileNames.join(", ") : "(none)"}`,
-            `Plan file: ${planFile}`,
+            `Plan file: ${planFile}${customFile ? " (custom — /plan file to reset to default)" : ""}`,
             `Web search: ${hasWebSearchTool() ? "available (from pi or another extension)" : "not available (no web_search tool installed)"}`,
             `Thinking effort: ${config.reasoningEffort ?? "default (no override)"}`,
             `Todos: ${hasTodoTool() ? "available (rpiv-todo)" : "NOT installed — /plan go is disabled (`pi install @juicesharp/rpiv-todo`)"}`,
@@ -406,6 +455,31 @@ export default function (pi: ExtensionAPI): void {
 
       if (action === "open") {
         await openPlanView(ctx);
+        return;
+      }
+
+      // Pick (or reset) this session's plan file. Works whether or not plan
+      // mode is on, so an agent can choose its file before entering plan
+      // mode. `/plan file` with no operand resets to the default.
+      if (action === "file") {
+        const name = rest.join(" ").trim();
+        if (name === "") {
+          activePlanFile = undefined;
+          ctx.ui.notify("Plan file reset to default.", "info");
+          if (planModeEnabled) refreshPlanWidget(ctx);
+          return;
+        }
+        const resolved = resolvePlanFileIn(ctx.cwd, name);
+        if (!resolved) {
+          ctx.ui.notify(
+            `Plan file "${name}" must resolve inside the project.`,
+            "warning",
+          );
+          return;
+        }
+        activePlanFile = name;
+        ctx.ui.notify(`Plan file set to ${name} (${resolved}).`, "info");
+        if (planModeEnabled) refreshPlanWidget(ctx);
         return;
       }
 
@@ -613,7 +687,7 @@ export default function (pi: ExtensionAPI): void {
 
     if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
       const rawPath = String(event.input.path ?? "");
-      const planFile = getPlanFilePath(ctx.cwd, loadConfig(ctx.cwd));
+      const planFile = currentPlanFilePath(ctx.cwd);
       if (!isAllowedWritePath(ctx.cwd, planFile, activeProfile?.writePaths, rawPath)) {
         return {
           block: true,
@@ -647,7 +721,7 @@ export default function (pi: ExtensionAPI): void {
   // Inject plan-mode instructions at the start of every planning turn.
   pi.on("before_agent_start", async (_event, ctx) => {
     if (!planModeEnabled) return;
-    const planFile = getPlanFilePath(ctx.cwd, loadConfig(ctx.cwd));
+    const planFile = currentPlanFilePath(ctx.cwd);
     return {
       message: {
         customType: CONTEXT_CUSTOM_TYPE,
@@ -717,15 +791,40 @@ export default function (pi: ExtensionAPI): void {
       planModeEnabled = last.data.enabled ?? false;
       toolsBeforePlanMode = last.data.toolsBeforePlanMode;
       activeProfileName = last.data.profile;
+      // Restore the session-selected plan file, re-validated against the
+      // current cwd (the repo/config may have changed since it was chosen).
+      const restored = last.data.planFile;
+      if (restored !== undefined && resolvePlanFileIn(ctx.cwd, restored) !== null) {
+        activePlanFile = restored;
+      } else if (restored !== undefined) {
+        activePlanFile = undefined;
+        ctx.ui.notify(
+          `[plan mode] Plan file "${restored}" no longer resolves inside the project — using the default.`,
+          "warning",
+        );
+      }
     }
 
-    // Startup flags: --plan (boolean, plain plan mode) and
-    // --plan-profile <name> (plan mode with a profile).
+    // Startup flags: --plan (boolean, plain plan mode),
+    // --plan-profile <name> (plan mode with a profile), and
+    // --plan-file <name> (plan mode on a named plan file).
     if (pi.getFlag("plan") === true) planModeEnabled = true;
     const profileFlag = pi.getFlag("plan-profile");
     if (typeof profileFlag === "string" && profileFlag !== "") {
       planModeEnabled = true;
       activeProfileName = profileFlag;
+    }
+    const fileFlag = pi.getFlag("plan-file");
+    if (typeof fileFlag === "string" && fileFlag !== "") {
+      planModeEnabled = true;
+      if (resolvePlanFileIn(ctx.cwd, fileFlag) !== null) {
+        activePlanFile = fileFlag;
+      } else {
+        ctx.ui.notify(
+          `[plan mode] Plan file "${fileFlag}" must resolve inside the project — using the default.`,
+          "warning",
+        );
+      }
     }
 
     if (planModeEnabled) {

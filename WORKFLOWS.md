@@ -129,3 +129,33 @@ resume | stop | rm <runId>`, `/workflow doctor`, `/workflow setup`.
 **Lesson:** the workflow machinery itself was fine in every failure
 above — the bugs were in the *orchestration script* (shape) and in
 *assuming agent outputs were machine-parseable*. Both are preventable.
+
+## 6. Parallel planning: one plan file per agent
+
+When several agents plan in the same repo at once, don't share `PLAN.md` —
+give each agent its own plan file so they can't clobber each other's
+plans or trip each other's write-gate. From pi-plan-ng's plan mode, each
+agent just picks a distinct file:
+
+```
+# agent A
+/plan file plans/agent-a.md
+/plan
+
+# agent B (a different pi session)
+/plan file plans/agent-b.md
+/plan
+```
+
+Each agent's widget, `/plan go`, viewer, and write-gate are scoped to its
+own file (selection is per process, so they're isolated by construction),
+and both persist across session restarts. For a fan-out from a workflow,
+launch each child with `--plan-file <name>` so it starts planning onto its
+own file immediately:
+
+```js
+const runs = await Promise.all([
+  agent(promptA, { args: ["--plan-file", "plans/agent-a.md"] }),
+  agent(promptB, { args: ["--plan-file", "plans/agent-b.md"] }),
+]);
+```

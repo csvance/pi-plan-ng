@@ -831,6 +831,25 @@ export function getPlanFilePath(cwd: string, config: PlanModeConfig): string {
 }
 
 /**
+ * Resolve a candidate plan-file path against `cwd` and return the absolute
+ * path only if it stays inside `cwd`. Returns `null` when `planFile` is
+ * empty or escapes the project.
+ *
+ * This is the same canonical `isInside` check `loadConfig` applies to a
+ * project config's `planFile` (AUDIT R9): comparing canonical forms means
+ * a `..` climb or a symlinked subdir cannot escape the project. It backs
+ * the `/plan file <name>` subcommand and the `--plan-file` startup flag,
+ * so a session-selected plan file is held to the same constraint as a
+ * project-shipped one. Absolute paths that happen to resolve inside `cwd`
+ * are accepted (they are just the project); paths outside are rejected.
+ */
+export function resolvePlanFileIn(cwd: string, planFile: string): string | null {
+  if (!planFile.trim()) return null;
+  const resolved = resolve(cwd, planFile);
+  return isInside(canonicalPath(cwd), canonicalPath(resolved)) ? resolved : null;
+}
+
+/**
  * Canonicalize `p` by resolving symlinks as far as the filesystem allows.
  * `realpathSync(p)` resolves every existing component; when `p` (or an
  * ancestor) does not exist yet — the common case for an edit/write target
