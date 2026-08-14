@@ -44,16 +44,21 @@ const SAFE_GIT_SUBCOMMANDS = new Set([
 const FIND_DANGEROUS = /^-?(exec|execdir|ok|okdir|delete|fprint|fprint0|fls|fprintf)/;
 
 /**
- * Write-capable flags on otherwise allowlisted commands (like FIND_DANGEROUS).
- * Each key is a command head; any argument word matching one of its regexes
- * makes the segment unsafe.
+ * Write/exec-capable flags on otherwise allowlisted commands (like FIND_DANGEROUS).
+ * Each key is a command head; any argument word (dequoted — see isSafeSegment)
+ * matching one of its regexes makes the segment unsafe.
  */
 const COMMAND_FLAG_DENY: Record<string, RegExp[]> = {
-  // GNU sort: -o / -o= / -oFILE and the long alias --output / --output= all write.
-  sort: [/^(-o|--output)/],
+  // GNU sort: -o / -o= / -oFILE and the long alias --output / --output= all write;
+  // --compress-program PROG spawns PROG (popen) on sorted chunks — code execution.
+  sort: [/^(-o|--output)/, /^--compress-program($|=)/],
   yq: [/^(-i|--inplace)($|=)/],
   // git --output=FILE writes; --output-indicator-* (diff formatting) stays allowed.
   git: [/^--output($|=)/],
+  // rg --pre <cmd> pipes every searched file through cmd — with the plan file as
+  // the searched content this is arbitrary code execution; --pager <cmd> spawns a
+  // pager command when stdout is a tty (defense-in-depth; inert headless today).
+  rg: [/^--pre($|=)/, /^--pager($|=)/],
 };
 
 /** git arguments that look like network remotes (URL or scp-style). */
@@ -275,25 +280,33 @@ function isSafeSegment(segment: string, allowed: ReadonlySet<string>): boolean {
   // starts with a quote character, so it never trips this check.
   if (words.some((w) => w.startsWith("~"))) return false;
 
-  // Write-capable flags on otherwise allowlisted commands (like FIND_DANGEROUS).
+  // Brace expansion can construct denied flags from benign-looking pieces
+  // (`-{d,d}elete` → `-delete`, `--p{re,re}=/bin/bash` → two `--pre=/bin/bash`
+  // copies — verified live against bash). Reject any unquoted `{` / `}` in
+  // every segment, not just `find`, so no command can smuggle a flag this way.
+  if (hasUnquotedBrace(trimmed)) return false;
+
+  // Dequote argument words so quoted/escaped forms ('-o', "-o", --'output',
+  // --outp\ut=...) are tested as the flags bash will actually pass. Head and
+  // subcommand allowlist checks stay on the raw words (a quoted head fails
+  // closed); only the flag/remote regexes run on dequoted tokens.
+  const tokens = tokenizeWords(trimmed);
+  if (!tokens) return false;
+
+  // Write/exec-capable flags on otherwise allowlisted commands (like FIND_DANGEROUS).
   const deny = COMMAND_FLAG_DENY[head];
-  if (deny && words.slice(1).some((w) => deny.some((re) => re.test(w)))) return false;
+  if (deny && tokens.slice(1).some((w) => deny.some((re) => re.test(w)))) return false;
 
   if (head === "git") {
     return (
       words.length >= 2 &&
       SAFE_GIT_SUBCOMMANDS.has(words[1]) &&
-      words.slice(1).every((w) => !GIT_REMOTE.test(w))
+      tokens.slice(1).every((w) => !GIT_REMOTE.test(w))
     );
   }
   if (head === "find") {
-    // Brace expansion can construct flags (`-{d,d}elete` → `-delete`), so
-    // reject any unquoted `{` / `}` in the segment.
-    if (hasUnquotedBrace(trimmed)) return false;
-    // Tokenize with dequoting so obfuscated flags like '-delete', "-exec",
-    // -\delete, or -e'xec' are tested as the plain flag they expand to.
-    const tokens = tokenizeWords(trimmed);
-    if (!tokens) return false;
+    // Dequoted tokens, so obfuscated flags like '-delete', "-exec", -\delete,
+    // or -e'xec' are tested as the plain flag they expand to.
     return tokens.slice(1).every((w) => !FIND_DANGEROUS.test(w));
   }
   return allowed.has(head);
@@ -337,8 +350,9 @@ export function describePlanModeBashRules(extraCommands?: Iterable<string>): str
     `git subcommands: ${git}`,
     "",
     "DENIED EVEN ON ALLOWED HEADS:",
-    "- write-capable flags: sort -o/--output, yq -i/--inplace, git diff/log --output=...",
+    "- write/exec-capable flags: sort -o/--output and --compress-program, yq -i/--inplace, git diff/log --output=..., rg --pre/--pager (quoted or escaped forms too)",
     "- find flags that write or execute: -exec, -execdir, -ok, -delete, -fprint... (quoted, escaped, or brace-obfuscated forms too)",
+    "- unquoted { } brace expansion in any segment (can construct denied flags; quoted braces are fine)",
     "- network-looking git arguments (URLs, scp-style remotes); git ls-remote is not allowed",
     '- unquoted word-initial ~ (bash would expand it; a quoted \'~\' is fine)',
     "- an unquoted # that starts a word begins a comment: the rest of the command is ignored (do not hide commands behind it)",

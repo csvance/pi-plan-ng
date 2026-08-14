@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Closed two critical RCEs in the plan-mode bash gate** (AUDIT round 2,
+  R1/R2): `rg --pre`/`--pager` and `sort --compress-program` are now denied,
+  matching the existing `COMMAND_FLAG_DENY` table — both flags spawn a
+  subprocess (`--pre` pipes every searched file through the command, so a
+  payload in `PLAN.md` became arbitrary code execution; `--compress-program`
+  executes sorted chunks through `PROG`).
+- **Flag deny-lists and the git-remote check now run on dequoted tokens**
+  (R3 foundation): quoted/escaped forms like `sort '-o'`, `git
+  --'output'=...`, and `git log 'https://…'` are tested as the flags bash
+  will actually pass, re-closing the round-1 L2 write bypass.
+- **Unquoted `{` `}` brace expansion is rejected in every segment** (not just
+  `find`): brace-duplicate forms (`rg --p{re,re}=/bin/bash`,
+  `sort --compress-{,}program=/bin/bash`) expand to two valid copies of the
+  denied flag and were verified live against bash; they are now blocked.
+  Quoted braces remain fine.
+
 ### Removed
 
 - **DeepSeek-backed `web_search` fallback**: plan mode no longer bundles its
