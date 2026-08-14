@@ -12,8 +12,11 @@
  *   `tui.editor.pageUp/pageDown`), `g`/`G` (top/bottom). If a user remaps
  *   `tui.altScreen.pageUp` etc. in their keybindings config, plain PageUp
  *   then reaches the viewer too.
- * - The embedded pi-tui `Editor` self-manages its window (borders, internal
- *   scroll), so edit mode needs no viewport math.
+ * - The embedded pi-tui `Editor` sizes its window and page size from
+ *   `tui.terminal.rows * 0.3` (minimum 5). We hand it a proxy tui whose
+ *   `terminal.rows` is inflated so the editor's native window matches the
+ *   overlay viewport — edit mode is full-screen with the editor's own
+ *   cursor-following scroll and paging intact.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -32,6 +35,31 @@ import { buildEditorTheme, buildMarkdownTheme, PLAN_TEMPLATE } from "./utils.ts"
 /** Rows reserved for the chrome (title + hint lines) in view mode. */
 const CHROME_LINES = 2;
 
+/** Chrome rows around the editor in edit mode: our title + its two borders. */
+const EDIT_CHROME = 3;
+
+/**
+ * The pi-tui `Editor` derives its window size from `tui.terminal.rows`
+ * (`max(5, floor(rows * 0.3))`) in both `render()` and `pageScroll()`. This
+ * proxy delegates everything to the real tui but presents a `terminal`
+ * whose `rows` is inflated by the inverse factor, so the editor's window
+ * and page size equal `getRows()` (the overlay viewport).
+ */
+function buildViewportTui(tui: TUI, getRows: () => number): TUI {
+  const terminal = {
+    get rows() {
+      return getRows();
+    },
+  };
+  return new Proxy(tui, {
+    get(target, prop, receiver) {
+      if (prop === "terminal") return terminal;
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 export interface PlanViewerCallbacks {
   /** Persist edited text and refresh surrounding state (widget, notify). */
   onSave(text: string): void;
@@ -49,6 +77,8 @@ export class PlanViewer implements Component, Focusable {
   private readonly callbacks: PlanViewerCallbacks;
   private readonly markdown: Markdown;
   private readonly editor: Editor;
+  /** Perceived terminal height for the editor's window math (see setViewport). */
+  private readonly editorRows = { value: 40 };
   private mode: "view" | "edit" = "view";
   private scrollOffset = 0;
   /** Lines of the last view-mode render at the current width. */
@@ -75,7 +105,7 @@ export class PlanViewer implements Component, Focusable {
     this.planFile = planFile;
     this.callbacks = callbacks;
     this.markdown = new Markdown(content, 0, 0, mdTheme);
-    this.editor = new Editor(tui, editorTheme);
+    this.editor = new Editor(buildViewportTui(tui, () => this.editorRows.value), editorTheme);
     this.editor.setText(content);
     // Enter submits (saves + returns to the rendered view); Shift+Enter inserts a newline.
     this.editor.onSubmit = (text) => this.commit(text);
@@ -93,6 +123,10 @@ export class PlanViewer implements Component, Focusable {
   /** Called by the overlay `visible()` callback with the terminal height. */
   setViewport(height: number): void {
     this.viewport = Math.max(CHROME_LINES + 3, height);
+    // Editor window = viewport − (title + top/bottom borders); inflate its
+    // perceived terminal so `max(5, floor(rows * 0.3))` equals that window.
+    const window = Math.max(5, this.viewport - EDIT_CHROME);
+    this.editorRows.value = Math.ceil(window / 0.3);
   }
 
   invalidate(): void {
@@ -177,7 +211,9 @@ export class PlanViewer implements Component, Focusable {
 
   private renderEditMode(width: number): string[] {
     const editorLines = this.editor.render(width);
-    return [this.titleLine("edit"), ...editorLines.slice(0, this.contentViewport())];
+    // The editor renders its window (content + two borders); slice defensively
+    // so the total never exceeds the overlay viewport.
+    return [this.titleLine("edit"), ...editorLines.slice(0, Math.max(1, this.viewport - 1))];
   }
 
   private titleLine(mode: "view" | "edit"): string {
@@ -185,7 +221,7 @@ export class PlanViewer implements Component, Focusable {
     const hints =
       mode === "view"
         ? " · e edit · esc close"
-        : " · enter save · shift+enter newline · esc close";
+        : " · ctrl+pgup/pgdn page · enter save · shift+enter newline · esc close";
     return (
       this.theme.fg("accent", label) +
       " " +

@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **rendered markdown view** (formatted headings, lists, task checkboxes,
   code blocks, tables; scroll with `↑`/`↓`, `ctrl+PageUp`/`ctrl+PageDown`,
   `g`/`G`; plain PageUp/PageDown remain pi's transcript-scroll keys unless
-  `tui.altScreen.*` is remapped) and the **edit mode** (Shift+Enter for
-  newlines, Enter saves and returns to the rendered view, Esc cancels).
+  `tui.altScreen.*` is remapped) and the **edit mode** (also full-screen;
+  Shift+Enter for newlines, `ctrl+PageUp`/`ctrl+PageDown` pages, Enter
+  saves and returns to the rendered view, Esc cancels).
 
 ### Security
 

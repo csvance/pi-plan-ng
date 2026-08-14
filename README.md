@@ -336,10 +336,11 @@ two modes, toggled in place with `e`:
   if you want them to scroll the plan instead, remap `tui.altScreen.pageUp`
   / `tui.altScreen.pageDown` in your keybindings config — the viewer
   already listens for the plain keys.
-- **Edit mode** (`e`) — the full plan editor (Shift+Enter for newlines).
-  `Enter` saves the changes back to the plan file, refreshes the widget,
-  and returns to the rendered view; `Esc` closes the viewer without saving.
-  The viewer works whether or not plan mode is currently on.
+- **Edit mode** (`e`) — the full plan editor, also full-screen (Shift+Enter
+  for newlines, `ctrl+PageUp`/`ctrl+PageDown` pages). `Enter` saves the
+  changes back to the plan file, refreshes the widget, and returns to the
+  rendered view; `Esc` closes the viewer without saving. The viewer works
+  whether or not plan mode is currently on.
 
 The footer shows `⏸ plan` while plan mode is on. The widget and plan-mode
 state are persisted in the session (`pi.appendEntry`), so they survive
