@@ -608,3 +608,37 @@ ban introduced here should also be re-tested against R4/R5/R8 when those
 flags are denied, and the audit's suggestion to invert the deny tables into
 per-command **safe-flag allowlists** remains the recommended structural fix.
 
+---
+
+## Round 2 — Resolution (R4/R5/R6 high items fixed)
+
+**Date:** 2026-08-14 (same day as round 2)
+**Scope:** the three **high** findings from round 2, done one at a time after
+R1/R2/R3. Each finding was re-verified live against the real tools before the
+fix and re-verified through the real gate after.
+
+### What changed
+
+| ID | Status | Fix |
+|----|--------|-----|
+| R4 | **fixed** | New `GIT_SUBCOMMAND_FLAG_DENY` table, checked post-dequote in the git branch: `grep` denies `/^-O/` and `/^--open-files-in-pager($|=)/`. Scoped to the subcommand so `git diff -O<orderfile>` (read-only) and `git grep -o` stay allowed. Verified live first: `git grep -O"touch /tmp/x" needle` and `git grep --open-files-in-pager="touch /tmp/x" needle` both executed `touch` in a real repo |
+| R5 | **fixed** | `uniq` positional-arity model: at most **one** positional allowed (the second positional is the output file — content-controlled write). `-f`/`-s`/`-w` and their long forms consume a separate value token; `--` makes the rest positional. Read-only forms (`uniq`, `uniq file`, `uniq -c file`, `uniq -f 2 file`, `uniq --skip-fields=2 file`) stay allowed; `uniq PLAN.md /home/x/.bashrc`, `uniq -f 2 in out`, `uniq -- PLAN.md out` blocked. Verified live: `uniq payload.txt /tmp/out` wrote the file |
+| R6 | **fixed** | `canonicalPath` now resolves *dangling* symlinks: when `realpathSync` fails on a component, `readlinkSync` resolves it and canonicalization continues on the target (recursion depth-capped at 40, mirroring the kernel ELOOP limit; cyclic chains return unresolved — the write itself fails ELOOP). The gate now rejects both repro variants (dangling `notebooks/leak.md` → `../outside/pwned.md`, dangling `PLAN.md` → `../outside/stolen-plan.md`), which previously returned `true` and wrote outside the allowed set. **Direct plan-file write sites hardened too** (`index.ts` `ensurePlanFile`, `/plan clear`, `plan_reset`; `plan-view.ts` viewer save): new exported `isSymlink` (lstat-based, detects dangling links) and each site refuses to write through a symlinked plan file with a visible notify — previously `writeFileSync` followed the link and clobbered its target |
+
+### Verification
+
+- R4/R5 gate sweep: all blocked forms `false`, all control forms `true`.
+- R6: both dangling-symlink repros `false` through the gate; the
+  `ensurePlanFile`-style guard leaves the outside target untouched while
+  still creating a genuinely new file inside the allowed dir.
+- Full suite green: **59/59 tests** (54 baseline + 4 new R6 fixtures in
+  `test/security-l3-l5.test.ts` + 1 new `isSymlink` test; R4/R5 cases live in
+  `test/security-r4-r6.test.ts`) + `tsc --noEmit` clean.
+
+### Still open (unchanged)
+
+R7 (`git symbolic-ref` write form), R8 (`tree -o`), R9 (config trust), R11
+(tty-dependent flags), R12 (hardlinks). Structural recommendation stands:
+move from per-command deny lists to per-command **safe-flag allowlists**.
+
+

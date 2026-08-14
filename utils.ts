@@ -3,7 +3,7 @@
  * allowlist expansion, and plan-file write-path checks.
  */
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -59,6 +59,20 @@ const COMMAND_FLAG_DENY: Record<string, RegExp[]> = {
   // the searched content this is arbitrary code execution; --pager <cmd> spawns a
   // pager command when stdout is a tty (defense-in-depth; inert headless today).
   rg: [/^--pre($|=)/, /^--pager($|=)/],
+};
+
+/**
+ * git subcommand-specific exec/write flags (like COMMAND_FLAG_DENY but keyed
+ * by subcommand — e.g. `git diff -O<orderfile>` is read-only while
+ * `git grep -O<pager>` executes a command). Checked post-dequote, same as
+ * COMMAND_FLAG_DENY.
+ */
+const GIT_SUBCOMMAND_FLAG_DENY: Record<string, RegExp[]> = {
+  // git grep -O / --open-files-in-pager run <pager> on every matching file;
+  // with a payload in the plan file (the one file the agent can write) this is
+  // arbitrary code execution. The pager can carry a full command via quoting
+  // (`-O'touch /tmp/pwn'`), so the whole `-O`-prefixed word is denied.
+  grep: [/^-O/, /^--open-files-in-pager($|=)/],
 };
 
 /** git arguments that look like network remotes (URL or scp-style). */
@@ -298,16 +312,46 @@ function isSafeSegment(segment: string, allowed: ReadonlySet<string>): boolean {
   if (deny && tokens.slice(1).some((w) => deny.some((re) => re.test(w)))) return false;
 
   if (head === "git") {
-    return (
-      words.length >= 2 &&
-      SAFE_GIT_SUBCOMMANDS.has(words[1]) &&
-      tokens.slice(1).every((w) => !GIT_REMOTE.test(w))
-    );
+    if (words.length < 2 || !SAFE_GIT_SUBCOMMANDS.has(words[1])) return false;
+    const subDeny = GIT_SUBCOMMAND_FLAG_DENY[words[1]];
+    if (subDeny && tokens.slice(1).some((w) => subDeny.some((re) => re.test(w)))) return false;
+    return tokens.slice(1).every((w) => !GIT_REMOTE.test(w));
   }
   if (head === "find") {
     // Dequoted tokens, so obfuscated flags like '-delete', "-exec", -\delete,
     // or -e'xec' are tested as the plain flag they expand to.
     return tokens.slice(1).every((w) => !FIND_DANGEROUS.test(w));
+  }
+  if (head === "uniq") {
+    // uniq [OPTION]... [INPUT [OUTPUT]] — the second positional is the OUTPUT
+    // file, a content-controlled write (adjacent-duplicate removal passes the
+    // agent's own plan-file content through verbatim, so `uniq PLAN.md
+    // ~/.bashrc` overwrites an arbitrary path). Allow at most one positional.
+    // Options taking a separate value (-f/-s/-w and their long forms) consume
+    // it, so `uniq -f 2 file` stays read-only; `--` makes the rest positional.
+    let positionals = 0;
+    let afterDoubleDash = false;
+    for (let i = 1; i < tokens.length; i++) {
+      const w = tokens[i];
+      if (afterDoubleDash) {
+        positionals++;
+        continue;
+      }
+      if (w === "--") {
+        afterDoubleDash = true;
+        continue;
+      }
+      if (
+        w === "-f" || w === "-s" || w === "-w" ||
+        w === "--skip-fields" || w === "--skip-chars" || w === "--check-chars"
+      ) {
+        i++; // value is the next token (attached -fN / --opt=N forms never reach here)
+        continue;
+      }
+      if (w.startsWith("-")) continue; // other flags: -c -d -D -i -u -z --count ...
+      positionals++;
+    }
+    return positionals < 2;
   }
   return allowed.has(head);
 }
@@ -351,6 +395,8 @@ export function describePlanModeBashRules(extraCommands?: Iterable<string>): str
     "",
     "DENIED EVEN ON ALLOWED HEADS:",
     "- write/exec-capable flags: sort -o/--output and --compress-program, yq -i/--inplace, git diff/log --output=..., rg --pre/--pager (quoted or escaped forms too)",
+    "- git grep -O / --open-files-in-pager (runs an arbitrary pager command on matching files); git diff -O<orderfile> stays allowed",
+    "- uniq with two or more file arguments (the second positional is the output file — a content-controlled write); one input file (or none) is fine",
     "- find flags that write or execute: -exec, -execdir, -ok, -delete, -fprint... (quoted, escaped, or brace-obfuscated forms too)",
     "- unquoted { } brace expansion in any segment (can construct denied flags; quoted braces are fine)",
     "- network-looking git arguments (URLs, scp-style remotes); git ls-remote is not allowed",
@@ -491,31 +537,65 @@ export function getPlanFilePath(cwd: string, config: PlanModeConfig): string {
  * canonicalize that, and re-append the missing components lexically. This
  * keeps non-existent paths lexical while still detecting symlink escapes.
  *
+ * A missing component that is itself a symlink (a *dangling* link) is
+ * resolved with `readlinkSync` and its target canonicalized instead of
+ * being treated lexically: `writeFileSync` follows the link and creates the
+ * target, so comparing the link's own path would let a dangling symlink
+ * escape the allowed set. Recursion is depth-capped (mirroring the kernel's
+ * ELOOP limit); a cyclic chain is returned unresolved, which is safe
+ * because the write itself fails with ELOOP.
+ *
  * NOTE: there is a residual TOCTOU race — a symlink swapped in between this
  * check and the actual write is not caught. That is accepted for a
  * model-facing gate (plan file and writePaths are user-configured, not an
  * OS-level sandbox).
  */
-function canonicalPath(p: string): string {
+const MAX_SYMLINK_DEPTH = 40;
+function canonicalPath(p: string, depth = 0): string {
   try {
     return realpathSync(p);
   } catch {
-    // not all components exist yet — fall through
+    // not all components exist (or p is a dangling/cyclic symlink) — fall through
   }
-  const tail: string[] = [];
+  if (depth >= MAX_SYMLINK_DEPTH) return p;
+  const missing: string[] = [];
   let current = p;
   for (;;) {
     try {
       const base = realpathSync(current);
       let result = base;
-      for (let i = tail.length - 1; i >= 0; i--) result = join(result, tail[i]);
+      for (let i = missing.length - 1; i >= 0; i--) result = join(result, missing[i]);
       return result;
     } catch {
       const parent = dirname(current);
       if (parent === current) return p; // reached the filesystem root
-      tail.push(basename(current));
-      current = parent;
+      try {
+        // `current` is a dangling symlink: canonicalize its target, then
+        // re-append the components that were deeper than it.
+        const link = readlinkSync(current);
+        let result = canonicalPath(resolve(dirname(current), link), depth + 1);
+        for (let i = missing.length - 1; i >= 0; i--) result = join(result, missing[i]);
+        return result;
+      } catch {
+        // not a symlink — a plain not-yet-created component; keep walking up
+        missing.push(basename(current));
+        current = parent;
+      }
     }
+  }
+}
+
+/**
+ * True when `p` exists and is a symbolic link — including a *dangling* one
+ * (`lstat` reports the link itself, so this does not need the target to
+ * exist). Used to fail closed before writing the plan file directly:
+ * `writeFileSync` would follow a symlinked PLAN.md and clobber its target.
+ */
+export function isSymlink(p: string): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false; // does not exist — a write will create a regular file
   }
 }
 

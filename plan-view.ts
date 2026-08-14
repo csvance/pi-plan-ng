@@ -30,7 +30,7 @@ import type {
   TUI,
 } from "@earendil-works/pi-tui";
 import { Editor, Markdown } from "@earendil-works/pi-tui";
-import { buildEditorTheme, buildMarkdownTheme, PLAN_TEMPLATE } from "./utils.ts";
+import { buildEditorTheme, buildMarkdownTheme, isSymlink, PLAN_TEMPLATE } from "./utils.ts";
 
 /** Rows reserved for the chrome (title + hint lines) in view mode. */
 const CHROME_LINES = 2;
@@ -320,6 +320,12 @@ export async function openPlanViewer(
     (tui, theme, keybindings, done) => {
       viewer = new PlanViewer(tui, keybindings, theme, mdTheme, editorTheme, planFile, content, {
         onSave: (text) => {
+          // Refuse to save through a symlinked plan file: writeFileSync would
+          // follow it and clobber its target (AUDIT R6).
+          if (isSymlink(planFile)) {
+            ctx.ui.notify(`Refusing to save: ${planFile} is a symlink.`, "error");
+            return;
+          }
           writeFileSync(planFile, text, "utf8");
           onSaved(text);
         },

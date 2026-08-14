@@ -39,6 +39,7 @@ import {
   getPlanFilePath,
   isAllowedWritePath,
   isSafeCommand,
+  isSymlink,
   loadConfig,
   PLAN_TEMPLATE,
   type PlanModeProfile,
@@ -143,7 +144,9 @@ export default function (pi: ExtensionAPI): void {
     const config = loadConfig(cwd);
     const planFile = getPlanFilePath(cwd, config);
     mkdirSync(dirname(planFile), { recursive: true });
-    if (!existsSync(planFile)) {
+    // Never create the plan file through a symlink (dangling or live):
+    // writeFileSync would follow it and clobber its target (AUDIT R6).
+    if (!existsSync(planFile) && !isSymlink(planFile)) {
       writeFileSync(planFile, PLAN_TEMPLATE, "utf8");
     }
     return planFile;
@@ -368,6 +371,10 @@ export default function (pi: ExtensionAPI): void {
           return;
         }
         const planFile = ensurePlanFile(ctx.cwd);
+        if (isSymlink(planFile)) {
+          ctx.ui.notify(`Refusing to reset: ${planFile} is a symlink.`, "error");
+          return;
+        }
         writeFileSync(planFile, PLAN_TEMPLATE, "utf8");
         if (planModeEnabled) refreshPlanWidget(ctx);
         ctx.ui.notify(`Plan reset: ${planFile}`, "info");
@@ -493,6 +500,12 @@ export default function (pi: ExtensionAPI): void {
         };
       }
       const planFile = ensurePlanFile(ctx.cwd);
+      if (isSymlink(planFile)) {
+        return {
+          content: [{ type: "text", text: `Refusing to reset: ${planFile} is a symlink.` }],
+          details: { confirmed: false, cleared: false },
+        };
+      }
       writeFileSync(planFile, PLAN_TEMPLATE, "utf8");
       if (planModeEnabled) refreshPlanWidget(ctx);
       return {

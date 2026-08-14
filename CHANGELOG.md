@@ -23,6 +23,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sort --compress-{,}program=/bin/bash`) expand to two valid copies of the
   denied flag and were verified live against bash; they are now blocked.
   Quoted braces remain fine.
+- **`git grep -O` / `--open-files-in-pager` denied** (R4): both flags run an
+  arbitrary pager command on every matching file — verified live in git
+  (`git grep -O"touch /tmp/x" needle` executes `touch`). Scoped to the
+  `grep` subcommand via a new `GIT_SUBCOMMAND_FLAG_DENY` table so the
+  read-only `git diff -O<orderfile>` and `git grep -o` stay allowed.
+- **`uniq` positional output denied** (R5): `uniq`'s second positional is the
+  output file, a content-controlled write (`uniq PLAN.md ~/.bashrc`). `uniq`
+  now allows at most one positional; `-f/-s/-w` (and long forms) consume
+  their value and `--` is honored, so `uniq -c file` and `uniq -f 2 file`
+  stay read-only.
+- **Dangling symlinks no longer escape the write allowlist** (R6):
+  `canonicalPath` now resolves missing components that are themselves
+  symlinks via `readlink` (with an ELOOP-style depth cap) instead of falling
+  back to their lexical path, so a dangling `notebooks/leak.md` or `PLAN.md`
+  link is rejected. The direct plan-file write sites (`ensurePlanFile`,
+  `/plan clear`, `plan_reset`, viewer save) additionally refuse to write
+  through a symlinked plan file via the new `isSymlink` helper (previously
+  `writeFileSync` followed the link and clobbered its target).
 
 ### Removed
 
