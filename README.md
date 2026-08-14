@@ -177,6 +177,14 @@ and the write gate canonicalizes paths so symlinks cannot redirect a write
 outside the allowed set. The agent sees the exact allowlist and deny rules
 in its context each turn — and the gate enforces them regardless.
 
+When a command is denied, the gate's `block.reason` tells the agent
+**exactly why** — the offending token (`sort -o`, `;`, `rm`, `git push`,
+…), the rule it violates, and what to change (e.g. the allowed read-only
+git subcommands, or noting the action in the plan for `/plan go`) — so
+the next attempt is more likely to be legal. The explanation comes from
+the same code that decides allow/deny (`checkSafeCommand` in `utils.ts`),
+never a parallel re-implementation, so it cannot drift from enforcement.
+
 ## Executing the plan
 
 `/plan go` exits plan mode and hands the plan to the agent with full tool

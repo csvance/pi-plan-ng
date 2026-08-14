@@ -45,7 +45,7 @@ const FIND_DANGEROUS = /^-?(exec|execdir|ok|okdir|delete|fprint|fprint0|fls|fpri
 
 /**
  * Write/exec-capable flags on otherwise allowlisted commands (like FIND_DANGEROUS).
- * Each key is a command head; any argument word (dequoted — see isSafeSegment)
+ * Each key is a command head; any argument word (dequoted — see checkSafeSegment)
  * matching one of its regexes makes the segment unsafe.
  */
 const COMMAND_FLAG_DENY: Record<string, RegExp[]> = {
@@ -84,6 +84,50 @@ const GIT_SUBCOMMAND_FLAG_DENY: Record<string, RegExp[]> = {
 };
 
 /**
+ * Human wording for each deny regex in COMMAND_FLAG_DENY /
+ * GIT_SUBCOMMAND_FLAG_DENY, same keys and same array order as those
+ * tables. Kept adjacent and in sync: when a deny regex changes, its
+ * wording here (and the mirror text in describePlanModeBashRules) must
+ * change with it.
+ */
+const COMMAND_FLAG_DENY_REASONS: Record<string, string[]> = {
+  sort: ["writes output to a file", "executes a program on the data"],
+  yq: ["writes the file in place"],
+  git: ["writes output to a file"],
+  rg: ["executes a command on every searched file", "spawns a pager command"],
+  tree: ["writes the listing to a file"],
+  less: ["writes input to a log file", "writes input to a log file", "writes input to a log file", "writes input to a log file"],
+  bat: ["spawns a pager command"],
+};
+
+const GIT_SUBCOMMAND_FLAG_DENY_REASONS: Record<string, string[]> = {
+  grep: ["executes a pager command on matching files", "executes a pager command on matching files"],
+};
+
+/** Live comma-joined allowed git subcommands, reused by git reasons. */
+const GIT_SUBCOMMANDS_TEXT = [...SAFE_GIT_SUBCOMMANDS].sort().join(", ");
+
+/**
+ * First dequoted token matching any deny regex (tokens left-to-right,
+ * regexes in table order — deterministic), plus the human wording for
+ * the matching regex. Returns null when nothing matches.
+ */
+function firstFlagHit(
+  tokens: string[],
+  regexes: ReadonlyArray<RegExp>,
+  wording: ReadonlyArray<string> | undefined,
+): { token: string; reason: string } | null {
+  for (const w of tokens) {
+    for (let i = 0; i < regexes.length; i++) {
+      if (regexes[i].test(w)) {
+        return { token: w, reason: wording?.[i] ?? "is a write/exec-capable flag" };
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * True when a `git symbolic-ref` invocation is the read-only query form.
  * `git symbolic-ref <name> <ref>` writes the symbolic ref (repo-state
  * mutation, e.g. pointing HEAD at a crafted ref) and `--delete` removes it,
@@ -112,6 +156,17 @@ const GIT_REMOTE = /^([a-z][a-z0-9+.-]*:\/\/|[^@\s]+@[^:\s]+:)/;
 /** Control characters never allowed anywhere in a plan-mode command. */
 const FORBIDDEN_ALWAYS = /[\r\n\x00]/;
 
+/** Human meaning of each unquoted metacharacter rejected by checkComposition. */
+const METACHAR_MEANING: Record<string, string> = {
+  ";": "is a command separator",
+  "$": "expands variables or commands",
+  "`": "runs a command substitution",
+  "<": "redirects input",
+  ">": "redirects output",
+  "(": "starts a subshell",
+  ")": "closes a subshell",
+};
+
 /**
  * Scan a command and split it on *unquoted* `&&` operators and `|`
  * pipelines, rejecting metacharacters where bash would interpret them:
@@ -119,16 +174,29 @@ const FORBIDDEN_ALWAYS = /[\r\n\x00]/;
  * inside double quotes (bash still expands them there); a lone `&`
  * (backgrounding, `|&`, `&>`); `||`; and unterminated quotes.
  * Single-quoted text is fully literal (backslashes included).
- * Returns null when the command must be rejected.
+ *
+ * Returns `{ segments }` on success — with `commentAt` set when an
+ * unquoted word-start `#` truncated the command (bash comment) and
+ * `lastSep` naming the `&&` / `|` separator before the final segment,
+ * both so checkSafeCommand can explain comment-caused empty segments —
+ * or `{ ok: false, reason }` naming the exact offending character or
+ * operator when the command must be rejected.
  */
-function splitComposition(command: string): string[] | null {
+function checkComposition(
+  command: string,
+):
+  | { segments: string[]; commentAt?: number; lastSep?: "&&" | "|" }
+  | { ok: false; reason: string } {
   const segments: string[] = [];
   let current = "";
   let quote: "'" | '"' | null = null;
+  let commentAt: number | undefined;
+  let lastSep: "&&" | "|" | undefined;
   // Whether an unquoted `#` at this position would begin a word (and so
   // start a comment). True at the start of the command and right after
   // whitespace or a `|` / `&&` separator.
   let atWordStart = true;
+  const reject = (reason: string): { ok: false; reason: string } => ({ ok: false, reason });
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
     if (quote === "'") {
@@ -140,7 +208,11 @@ function splitComposition(command: string): string[] | null {
     }
     if (quote === '"') {
       // double quotes: $ and backticks are still active in bash
-      if (ch === "$" || ch === "`") return null;
+      if (ch === "$" || ch === "`") {
+        return reject(
+          `unquoted ${JSON.stringify(ch)} inside double quotes still expands in bash — not allowed in plan mode; single-quote it or remove it`,
+        );
+      }
       current += ch;
       if (ch === "\\") {
         // escaped char is literal; consume it too
@@ -169,14 +241,16 @@ function splitComposition(command: string): string[] | null {
         i++;
         atWordStart = false;
       } else {
-        return null; // trailing backslash: unterminated escape
+        return reject("command ends with a lone unquoted backslash — remove it");
       }
       continue;
     }
     // An unquoted `#` that starts a word begins a comment: everything to
     // the end of the command is ignored (mirrors bash — `ls # rm -rf /`
-    // validates as just `ls`).
+    // validates as just `ls`). Record where, so comment-caused empty
+    // segments can be explained.
     if (ch === "#" && atWordStart) {
+      commentAt = i;
       break;
     }
     if (ch === " " || ch === "\t") {
@@ -185,36 +259,44 @@ function splitComposition(command: string): string[] | null {
       continue;
     }
     if (ch === ";" || ch === "$" || ch === "`" || ch === "<" || ch === ">" || ch === "(" || ch === ")") {
-      return null;
+      return reject(
+        `unquoted ${JSON.stringify(ch)} ${METACHAR_MEANING[ch]} — not allowed in plan mode; quote it or remove it`,
+      );
     }
     if (ch === "&") {
       if (command[i + 1] === "&") {
         segments.push(current);
         current = "";
+        lastSep = "&&";
         atWordStart = true;
         i++;
         continue;
       }
-      return null; // lone &: backgrounding, |&, &>
+      return reject("unquoted & is backgrounding (or |& / &>) — not allowed in plan mode; remove it");
     }
     if (ch === "|") {
       const next = command[i + 1];
-      if (next === "|" || next === "&") return null; // || or |&
+      if (next === "|") return reject("unquoted || is not allowed in plan mode — only && and single pipelines | are allowed");
+      if (next === "&") return reject("unquoted |& merges stderr into the pipeline — not allowed in plan mode");
       segments.push(current);
       current = "";
+      lastSep = "|";
       atWordStart = true;
       continue;
     }
     current += ch;
     atWordStart = false;
   }
-  if (quote !== null) return null; // unterminated quote — fail closed
+  if (quote !== null) return reject("unterminated quote — close the quote");
   segments.push(current);
-  return segments;
+  const out: { segments: string[]; commentAt?: number; lastSep?: "&&" | "|" } = { segments };
+  if (commentAt !== undefined) out.commentAt = commentAt;
+  if (lastSep !== undefined) out.lastSep = lastSep;
+  return out;
 }
 
 /**
- * Quote-aware word tokenizer, mirroring splitComposition's scanner rules:
+ * Quote-aware word tokenizer, mirroring checkComposition's scanner rules:
  * single-quoted text is fully literal and dequoted; double-quoted text
  * processes backslash escapes and is dequoted; an unquoted backslash \X
  * yields X; whitespace separates words. Returns null on an unterminated
@@ -314,45 +396,118 @@ function hasUnquotedBrace(segment: string): boolean {
   return false;
 }
 
-/** Validate a single (already split) command segment: bare allowlisted head only. */
-function isSafeSegment(segment: string, allowed: ReadonlySet<string>): boolean {
+/**
+ * Validate a single (already split) command segment: bare allowlisted head
+ * only. Returns the reason for the FIRST failing check, or `{ ok: true }`.
+ * Check order is fixed (do not reorder — it decides which reason fires):
+ *   1. empty / length > 2000
+ *   2. unquoted word-initial `~`
+ *   3. unquoted `{` / `}` (brace expansion)
+ *   4. tokenization failure (unterminated quote / trailing backslash)
+ *   5. COMMAND_FLAG_DENY[head] on dequoted tokens
+ *   6. git: subcommand allowlist → subcommand flag deny → symbolic-ref
+ *      query form → network-looking args (dequoted)
+ *   7. find: write/exec flags on dequoted tokens
+ *   8. uniq: at most one positional (second is the OUTPUT file)
+ *   9. head allowlist (raw head; a quoted head fails closed)
+ */
+function checkSafeSegment(
+  segment: string,
+  allowed: ReadonlySet<string>,
+): { ok: true } | { ok: false; reason: string } {
   const trimmed = segment.trim();
-  if (!trimmed || trimmed.length > 2000) return false;
+  if (!trimmed) {
+    return { ok: false, reason: "segment is empty" };
+  }
+  if (trimmed.length > 2000) {
+    return { ok: false, reason: `segment exceeds the 2000-char length limit (${trimmed.length} chars)` };
+  }
   const words = trimmed.split(/\s+/);
   const head = words[0] ?? "";
 
   // Unquoted word-initial `~` would be expanded by bash. A quoted `'~'`
   // starts with a quote character, so it never trips this check.
-  if (words.some((w) => w.startsWith("~"))) return false;
+  const tildeWord = words.find((w) => w.startsWith("~"));
+  if (tildeWord !== undefined) {
+    return {
+      ok: false,
+      reason: `unquoted ${JSON.stringify(tildeWord)} starts with ~ which bash expands to a home directory — not allowed in plan mode; quote it ('~') or remove it`,
+    };
+  }
 
   // Brace expansion can construct denied flags from benign-looking pieces
   // (`-{d,d}elete` → `-delete`, `--p{re,re}=/bin/bash` → two `--pre=/bin/bash`
   // copies — verified live against bash). Reject any unquoted `{` / `}` in
   // every segment, not just `find`, so no command can smuggle a flag this way.
-  if (hasUnquotedBrace(trimmed)) return false;
+  if (hasUnquotedBrace(trimmed)) {
+    return {
+      ok: false,
+      reason: "unquoted { } (brace expansion) can construct denied flags — not allowed in plan mode; quote or remove the braces",
+    };
+  }
 
   // Dequote argument words so quoted/escaped forms ('-o', "-o", --'output',
   // --outp\ut=...) are tested as the flags bash will actually pass. Head and
   // subcommand allowlist checks stay on the raw words (a quoted head fails
   // closed); only the flag/remote regexes run on dequoted tokens.
   const tokens = tokenizeWords(trimmed);
-  if (!tokens) return false;
+  if (!tokens) {
+    return { ok: false, reason: "unterminated quote or trailing backslash — fix the quoting" };
+  }
 
   // Write/exec-capable flags on otherwise allowlisted commands (like FIND_DANGEROUS).
   const deny = COMMAND_FLAG_DENY[head];
-  if (deny && tokens.slice(1).some((w) => deny.some((re) => re.test(w)))) return false;
+  if (deny) {
+    const hit = firstFlagHit(tokens.slice(1), deny, COMMAND_FLAG_DENY_REASONS[head]);
+    if (hit) {
+      return { ok: false, reason: `${head} ${hit.token} ${hit.reason} — not allowed in plan mode; drop it` };
+    }
+  }
 
   if (head === "git") {
-    if (words.length < 2 || !SAFE_GIT_SUBCOMMANDS.has(words[1])) return false;
-    const subDeny = GIT_SUBCOMMAND_FLAG_DENY[words[1]];
-    if (subDeny && tokens.slice(1).some((w) => subDeny.some((re) => re.test(w)))) return false;
-    if (words[1] === "symbolic-ref" && !isSafeSymbolicRef(tokens)) return false;
-    return tokens.slice(1).every((w) => !GIT_REMOTE.test(w));
+    if (words.length < 2) {
+      return { ok: false, reason: `git needs a subcommand — allowed read-only subcommands: ${GIT_SUBCOMMANDS_TEXT}` };
+    }
+    const sub = words[1];
+    if (!SAFE_GIT_SUBCOMMANDS.has(sub)) {
+      return {
+        ok: false,
+        reason: `git ${sub} is not an allowed read-only subcommand in plan mode — allowed: ${GIT_SUBCOMMANDS_TEXT}`,
+      };
+    }
+    const subDeny = GIT_SUBCOMMAND_FLAG_DENY[sub];
+    if (subDeny) {
+      const hit = firstFlagHit(tokens.slice(1), subDeny, GIT_SUBCOMMAND_FLAG_DENY_REASONS[sub]);
+      if (hit) {
+        return { ok: false, reason: `git ${sub} ${hit.token} ${hit.reason} — not allowed in plan mode; drop it` };
+      }
+    }
+    if (sub === "symbolic-ref" && !isSafeSymbolicRef(tokens)) {
+      return {
+        ok: false,
+        reason: "git symbolic-ref is allowed only in query form (no <ref> argument, no --delete) — the update form writes .git/HEAD",
+      };
+    }
+    const remote = tokens.slice(1).find((w) => GIT_REMOTE.test(w));
+    if (remote !== undefined) {
+      return {
+        ok: false,
+        reason: `${JSON.stringify(remote)} looks like a network remote (URL or scp-style) — not allowed in plan mode; git here is read-only and local`,
+      };
+    }
+    return { ok: true };
   }
   if (head === "find") {
     // Dequoted tokens, so obfuscated flags like '-delete', "-exec", -\delete,
     // or -e'xec' are tested as the plain flag they expand to.
-    return tokens.slice(1).every((w) => !FIND_DANGEROUS.test(w));
+    const hit = tokens.slice(1).find((w) => FIND_DANGEROUS.test(w));
+    if (hit !== undefined) {
+      return {
+        ok: false,
+        reason: `find ${hit} writes or executes — not allowed in plan mode; drop it (find is read-only here)`,
+      };
+    }
+    return { ok: true };
   }
   if (head === "uniq") {
     // uniq [OPTION]... [INPUT [OUTPUT]] — the second positional is the OUTPUT
@@ -383,9 +538,24 @@ function isSafeSegment(segment: string, allowed: ReadonlySet<string>): boolean {
       if (w.startsWith("-")) continue; // other flags: -c -d -D -i -u -z --count ...
       positionals++;
     }
-    return positionals < 2;
+    if (positionals >= 2) {
+      return {
+        ok: false,
+        reason: "uniq allows at most one input file — the second positional is the output file, a write; drop it",
+      };
+    }
+    return { ok: true };
   }
-  return allowed.has(head);
+  if (!allowed.has(head)) {
+    if (head.startsWith("'") || head.startsWith('"')) {
+      return { ok: false, reason: `quoted command name ${JSON.stringify(head)} is not allowed in plan mode — unquote it` };
+    }
+    return {
+      ok: false,
+      reason: `${head} is not allowlisted in plan mode (read-only commands only) — grant it via profile bash additions, or note the action in the plan and run it via /plan go`,
+    };
+  }
+  return { ok: true };
 }
 
 /**
@@ -395,18 +565,90 @@ function isSafeSegment(segment: string, allowed: ReadonlySet<string>): boolean {
  * `;`, `||`, backgrounding `&`, and empty segments are always rejected;
  * quoted text is literal (except `$`/backticks in double quotes).
  * `extraCommands` extends the allowlist (profile bash commands).
+ *
+ * Returns the reason of the FIRST failing check — the same short-circuit
+ * order the old boolean used, so `isSafeCommand` (below) is behaviorally
+ * identical by construction. The reason names the exact offending
+ * token/character and what to change; it is what the plan-mode gate
+ * shows the agent when a command is blocked. Multi-segment commands get
+ * an `in segment N ("…")` prefix when there are ≥2 segments.
  */
-export function isSafeCommand(command: string, extraCommands?: Iterable<string>): boolean {
+export function checkSafeCommand(
+  command: string,
+  extraCommands?: Iterable<string>,
+): { ok: true } | { ok: false; reason: string } {
   const trimmed = command.trim();
-  if (!trimmed || trimmed.length > 2000) return false;
-  if (FORBIDDEN_ALWAYS.test(trimmed)) return false;
-  const segments = splitComposition(trimmed);
-  if (!segments || segments.length === 0) return false;
-  if (segments.some((s) => s.trim() === "")) return false;
+  if (!trimmed) {
+    return { ok: false, reason: "command is empty — send a real command" };
+  }
+  if (trimmed.length > 2000) {
+    return { ok: false, reason: `command exceeds the 2000-char length limit (${trimmed.length} chars) — shorten it` };
+  }
+  if (FORBIDDEN_ALWAYS.test(trimmed)) {
+    return { ok: false, reason: "command contains newlines or control characters — not allowed in plan mode; send a single-line command" };
+  }
+  const composed = checkComposition(trimmed);
+  if (!("segments" in composed)) return composed; // { ok: false, reason }
+  const { segments, commentAt, lastSep } = composed;
+  if (segments.length === 0) {
+    return { ok: false, reason: "command is empty — send a real command" };
+  }
+  for (let i = 0; i < segments.length; i++) {
+    if (segments[i].trim() !== "") continue;
+    const where = lastSep ? `after ${JSON.stringify(lastSep)}` : "at the start of the command";
+    if (commentAt !== undefined) {
+      return {
+        ok: false,
+        reason: `empty segment ${where} — an unquoted # at word start begins a comment and bash ignores the rest of the command; move or quote the comment, or complete the composition`,
+      };
+    }
+    return { ok: false, reason: `empty segment ${where} — complete the composition` };
+  }
   const allowed = extraCommands
     ? new Set([...SAFE_COMMANDS, ...extraCommands])
     : SAFE_COMMANDS;
-  return segments.every((s) => isSafeSegment(s, allowed));
+  for (let i = 0; i < segments.length; i++) {
+    const res = checkSafeSegment(segments[i], allowed);
+    if (!res.ok) {
+      if (segments.length >= 2) {
+        return { ok: false, reason: `in segment ${i + 1} (${JSON.stringify(segments[i].trim())}): ${res.reason}` };
+      }
+      return res;
+    }
+  }
+  return { ok: true };
+}
+
+/** Boolean verdict of checkSafeCommand — identical behavior by construction. */
+export function isSafeCommand(command: string, extraCommands?: Iterable<string>): boolean {
+  return checkSafeCommand(command, extraCommands).ok;
+}
+
+/**
+ * Full gate reason for a blocked bash command — the `block.reason` the
+ * plan-mode `tool_call` gate returns (the text the model sees). Returns
+ * null when the command is safe. `label` is the `[plan mode …]` prefix
+ * from index.ts modeLabel(); `extraCommands` extends the allowlist
+ * exactly like checkSafeCommand / isSafeCommand.
+ *
+ * Keep the wording in sync with checkSafeCommand / checkSafeSegment /
+ * checkComposition (same file, above) — the reason line is their
+ * first-failure output, never a parallel re-implementation.
+ */
+export function bashBlockReason(
+  command: string,
+  extraCommands?: Iterable<string>,
+  label?: string,
+): string | null {
+  const check = checkSafeCommand(command, extraCommands);
+  if (check.ok) return null;
+  const prefix = label ? `[${label}] ` : "";
+  return (
+    `${prefix}${check.reason}\n` +
+    `Blocked: ${command}\n` +
+    `Full rules: see BASH RULES in your plan-mode instructions.\n` +
+    `Run /plan to leave plan mode, or /plan go to execute the plan with full access.`
+  );
 }
 
 /**
@@ -414,7 +656,7 @@ export function isSafeCommand(command: string, extraCommands?: Iterable<string>)
  * heads and git subcommands come from the live enforcement constants
  * (`SAFE_COMMANDS`, `SAFE_GIT_SUBCOMMANDS`), so the prompt can never drift
  * from the gate. The deny-rules text mirrors `COMMAND_FLAG_DENY` /
- * `FIND_DANGEROUS` / `GIT_REMOTE` / `splitComposition` above — keep it in
+ * `FIND_DANGEROUS` / `GIT_REMOTE` / `checkComposition` above — keep it in
  * sync when changing the gate.
  */
 export function describePlanModeBashRules(extraCommands?: Iterable<string>): string {

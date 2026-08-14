@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Denied bash commands now tell the agent exactly why**: the plan-mode
+  gate's `block.reason` names the offending token (`sort -o`, `;`, `rm`,
+  `git push`, …), the rule it violates, and what to change (e.g. the
+  allowed read-only git subcommands, or noting the action in the plan for
+  `/plan go`). The reason is produced by the same code that decides
+  `isSafeCommand` (`checkSafeCommand` / `bashBlockReason` in `utils.ts`),
+  so it can never drift from enforcement; multi-segment commands name the
+  failing segment, and comment-caused empty segments explain the `#`
+  truncation. `test/reasons.test.ts` plus a per-class reason table in
+  `test/utils.test.ts` pin each explanation (and a parity test proves
+  the boolean verdicts are unchanged).
+
 ### Security
 
 - **Closed two critical RCEs in the plan-mode bash gate** (AUDIT round 2,

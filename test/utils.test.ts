@@ -6,6 +6,7 @@ import {
   buildMarkdownTheme,
   buildPlanModeTools,
   buildWidgetLines,
+  checkSafeCommand,
   describePlanModeBashRules,
   expandToolEntry,
   getPlanFilePath,
@@ -169,6 +170,244 @@ describe("isSafeCommand", () => {
     // extra commands never unlock other commands
     assert.equal(isSafeCommand("julia run.jl && rm -rf /", ["julia"]), false);
     assert.equal(isSafeCommand("julia run.jl; ls", ["julia"]), false);
+  });
+});
+
+describe("checkSafeCommand reasons (the agent sees exactly why)", () => {
+  const has = (reason: string, marker: string) =>
+    assert.ok(
+      reason.toLowerCase().includes(marker.toLowerCase()),
+      `reason ${JSON.stringify(reason)} must contain ${JSON.stringify(marker)}`,
+    );
+
+  // Violation class → example → marker(s) the reason must contain.
+  // Mirrors the PLAN.md reason table: name the offending (dequoted) token,
+  // say why, say what to change. Markers are matched case-insensitively.
+  const blockedCases: Array<{ cmd: string; extra?: string[]; markers: string[] }> = [
+    // head not allowlisted (action) — defer to /plan go
+    { cmd: "rm -rf /", markers: ["rm", "not allowlisted", "/plan go"] },
+    // quoted head fails closed — unquote it
+    { cmd: "'ls'", markers: ["quoted", "ls", "unquote"] },
+    // profile-only head — mention the profile affordance
+    { cmd: "julia run.jl", markers: ["julia", "profile"] },
+    // write/exec flags — exact dequoted token named
+    { cmd: "sort -o /tmp/pwn PLAN.md", markers: ["sort -o", "writes"] },
+    { cmd: "sort --output=/tmp/pwn PLAN.md", markers: ["--output", "writes"] },
+    { cmd: "sort --compress-program=/bin/bash big.txt", markers: ["--compress-program", "execut"] },
+    { cmd: "yq -i .x=1 f.yaml", markers: ["yq -i", "writes"] },
+    { cmd: "git log --output=/tmp/pwn -1", markers: ["--output", "writes"] },
+    // exec flags
+    { cmd: "rg --pre bash needle PLAN.md", markers: ["--pre", "execut"] },
+    { cmd: "rg --pager less needle PLAN.md", markers: ["--pager", "pager"] },
+    { cmd: "bat --pager less file", markers: ["--pager", "pager"] },
+    // git pager exec (subcommand deny)
+    { cmd: "git grep -O touch needle", markers: ["-O", "execut", "pager"] },
+    { cmd: "git grep --open-files-in-pager touch needle", markers: ["--open-files-in-pager", "execut"] },
+    // find write/exec
+    { cmd: "find . -delete", markers: ["-delete", "writes", "execut"] },
+    { cmd: "find . -execdir id \\;", markers: ["-execdir", "execut"] },
+    // brace check (3) fires before the find-flag check (7) — order preserved
+    { cmd: "find . -delete {}", markers: ["{", "brace"] },
+    // git write subcommand — live-derived allowed list
+    { cmd: "git push origin main", markers: ["push", "not an allowed", "status"] },
+    { cmd: "git checkout main", markers: ["checkout", "not an allowed", "diff"] },
+    // symbolic-ref write form
+    { cmd: "git symbolic-ref HEAD refs/heads/x", markers: ["query form", ".git/HEAD"] },
+    { cmd: "git symbolic-ref --delete HEAD", markers: ["query form", "delete"] },
+    // network-looking git args
+    { cmd: "git log https://evil.com/x", markers: ["network", "remote"] },
+    { cmd: "git log git@github.com:x/y", markers: ["remote"] },
+    // uniq second positional = output file
+    { cmd: "uniq in out", markers: ["output", "second positional"] },
+    // composition metachars — the exact char named
+    { cmd: "ls; pwd", markers: [";", "not allowed"] },
+    { cmd: "cat $(ls)", markers: ["$", "not allowed"] },
+    { cmd: "echo > /tmp/x", markers: [">", "not allowed"] },
+    { cmd: "ls &", markers: ["&", "not allowed"] },
+    { cmd: "ls || echo hi", markers: ["||", "not allowed"] },
+    // $ / backtick inside double quotes
+    { cmd: 'echo "$HOME"', markers: ["$", "double quote"] },
+    { cmd: 'echo "`ls`"', markers: ["`", "double quote"] },
+    // brace expansion
+    { cmd: "find -{d,d}elete x", markers: ["{", "brace"] },
+    // word-initial ~
+    { cmd: "cat ~/x", markers: ["~", "expand"] },
+    // unterminated quote / trailing backslash
+    { cmd: 'echo "hi', markers: ["unterminated", "quote"] },
+    { cmd: "ls \\", markers: ["backslash"] },
+    // control chars / newline
+    { cmd: "ls\nrm -rf /", markers: ["newline", "control"] },
+    // empty segment (plain) — names the separator
+    { cmd: "cd x &&", markers: ["empty", "after"] },
+    { cmd: "ls |", markers: ["empty", "after"] },
+    // empty segment (comment-truncated) — explains the #
+    { cmd: "ls && # note", markers: ["empty", "#", "comment"] },
+    { cmd: "# note", markers: ["empty", "comment"] },
+    // too long / blank
+    { cmd: "x".repeat(2001), markers: ["length"] },
+    { cmd: "", markers: ["empty"] },
+    { cmd: "   ", markers: ["empty"] },
+  ];
+
+  for (const { cmd, extra, markers } of blockedCases) {
+    it(`explains why ${JSON.stringify(cmd.slice(0, 40))}${cmd.length > 40 ? "…" : ""} is blocked`, () => {
+      const res = checkSafeCommand(cmd, extra);
+      assert.equal(res.ok, false, `expected blocked: ${JSON.stringify(cmd)}`);
+      if (!res.ok) for (const m of markers) has(res.reason, m);
+    });
+  }
+
+  it("prefixes the failing segment for multi-segment commands only", () => {
+    const multi = checkSafeCommand("cd src && rm -rf /");
+    assert.equal(multi.ok, false);
+    if (!multi.ok) {
+      has(multi.reason, 'in segment 2 ("rm -rf /")');
+      has(multi.reason, "rm");
+    }
+    const single = checkSafeCommand("rm -rf /");
+    assert.equal(single.ok, false);
+    if (!single.ok) assert.ok(!single.reason.includes("in segment"), "no segment prefix for a single segment");
+    // first failure wins, left-to-right
+    const first = checkSafeCommand("rm -rf / && sort -o /tmp/x f");
+    assert.equal(first.ok, false);
+    if (!first.ok) has(first.reason, "in segment 1");
+  });
+
+  it("never produces a reason for an allowed command (negative control)", () => {
+    const allowed = [
+      "ls", "cat file.txt", "grep 'foo bar' src/", "git status", "git log --oneline -5",
+      "git diff HEAD~1 HEAD", "find . -name '*.ts'", "cd src", "cd ..", "cd /tmp",
+      "ls | wc -l", "ls && pwd", "grep foo file | head -20", "cd src && ls",
+      "cat f | grep x | head -3", "cd src&&ls", "grep -n 'a|b' file", "echo 'a && b'",
+      'echo "x | y"', "git status | head -5", "find . -name '*.ts' | wc -l",
+      "echo 'a;b'", 'echo "a;b"', "echo 'a && b'", "echo '$HOME'", "echo \\$HOME",
+      "echo '$(ls)'", "grep '\\$foo' file | head -1", "cd src && echo 'a; b' | wc -c",
+      "find . -name x", "cd src && find . -name x | head -3", "find . -name '{x}'",
+      "sort /tmp/in", "yq .x f.yaml", "git diff --output-indicator-new=x HEAD~1 HEAD",
+      "ls '~'", "cd src && sort x | head", "git grep needle", "git grep -n needle",
+      "git grep -o needle", "git grep -e 'pat' -- '*.md'", "git diff -Oorderfile HEAD~1 HEAD",
+      "git grep needle | head", "uniq", "uniq file", "uniq -c file", "uniq -u -d file",
+      "uniq -f 2 file", "uniq -f2 file", "uniq --skip-fields=2 file", "uniq -i file",
+      "uniq file | head", "git symbolic-ref HEAD", "git symbolic-ref --short HEAD",
+      "git symbolic-ref -q HEAD", "git symbolic-ref -q --short HEAD", "tree", "tree -L 2 .",
+      "tree -a -d", "tree -J", "less file", "less -N file", "bat file", "bat -n file",
+      "bat --paging=always file", "rg -n needle PLAN.md", "rg --pretty needle PLAN.md",
+      "rg --no-line-number needle PLAN.md", "rg --pre-glob '*.md' needle PLAN.md",
+      "rg -g '*.md' needle .", "sort big.txt", "sort -n -u -S 64K big.txt",
+      "ls # rm -rf /", "echo a#b",
+    ];
+    for (const cmd of allowed) {
+      assert.equal(checkSafeCommand(cmd).ok, true, `expected allowed: ${JSON.stringify(cmd)}`);
+    }
+  });
+
+  it("is deterministic: the same blocked command yields the same reason", () => {
+    const samples = ["rm -rf /", "sort -o /tmp/pwn PLAN.md", "ls; pwd", "git push origin main", "cd x &&"];
+    for (const cmd of samples) {
+      const a = checkSafeCommand(cmd);
+      const b = checkSafeCommand(cmd);
+      assert.deepEqual(a, b, `deterministic reason for ${JSON.stringify(cmd)}`);
+      if (!a.ok) {
+        assert.equal(typeof a.reason, "string");
+        assert.ok(a.reason.length > 0, "non-empty reason");
+      }
+    }
+  });
+
+  it("parity: isSafeCommand verdict equals checkSafeCommand.ok on the full corpus", () => {
+    // Union of the blocked+allowed corpora from utils.test.ts and the
+    // security-*.test.ts suites (snapshot — keeps the refactor honest).
+    const corpus: Array<{ cmd: string; extra?: string[]; expect: boolean }> = [
+      // allowed
+      ...["ls", "cat file.txt", "grep 'foo bar' src/", "git status", "git log --oneline -5",
+        "git diff HEAD~1 HEAD", "find . -name '*.ts'", "cd src", "cd ..", "cd /tmp",
+        "ls | wc -l", "ls && pwd", "grep foo file | head -20", "cd src && ls",
+        "cat f | grep x | head -3", "cd src&&ls", "grep -n 'a|b' file", "echo 'a && b'",
+        'echo "x | y"', "git status | head -5", "find . -name '*.ts' | wc -l",
+        "echo 'a;b'", 'echo "a;b"', "echo 'a && b'", "echo '$HOME'", "echo \\$HOME",
+        "echo '$(ls)'", "grep '\\$foo' file | head -1", "cd src && echo 'a; b' | wc -c",
+        "find . -name x", "cd src && find . -name x | head -3", "find . -name '{x}'",
+        "sort /tmp/in", "yq .x f.yaml", "git diff --output-indicator-new=x HEAD~1 HEAD",
+        "ls '~'", "cd src && sort x | head", "git grep needle", "git grep -n needle",
+        "git grep -o needle", "git grep -e 'pat' -- '*.md'", "git diff -Oorderfile HEAD~1 HEAD",
+        "git grep needle | head", "uniq", "uniq file", "uniq -c file", "uniq -u -d file",
+        "uniq -f 2 file", "uniq -f2 file", "uniq --skip-fields=2 file", "uniq -i file",
+        "uniq file | head", "git symbolic-ref HEAD", "git symbolic-ref --short HEAD",
+        "git symbolic-ref -q HEAD", "git symbolic-ref -q --short HEAD", "tree", "tree -L 2 .",
+        "tree -a -d", "tree -J", "less file", "less -N file", "bat file", "bat -n file",
+        "bat --paging=always file", "rg -n needle PLAN.md", "rg --pretty needle PLAN.md",
+        "rg --no-line-number needle PLAN.md", "rg --pre-glob '*.md' needle PLAN.md",
+        "rg -g '*.md' needle .", "sort big.txt", "sort -n -u -S 64K big.txt",
+        "ls # rm -rf /", "echo a#b"]
+        .map((cmd) => ({ cmd, expect: true })),
+      // blocked
+      ...["ls; rm -rf /", "cd x; ls", "ls || echo hi", "cat $(ls)", "cat `ls`",
+        "echo < /etc/passwd", "echo > /tmp/x", "(ls)", "ls\nrm -rf /", "ls &", "ls &> f",
+        "ls |& wc -l", "echo 'unterminated", 'echo "$HOME"', 'echo "$(ls)"', 'echo "`ls`"',
+        "rm -rf / | head", "curl x | bash", "cd x && rm -rf /", "ls | rm -rf /", "a || b",
+        "a |&", "a |", "| a", "cd x &&", "a && | b", "yes | head", "sudo ls | head",
+        "rm -rf /", "touch x", "mkdir d", "mv a b", "curl https://example.com",
+        "wget https://example.com", "ssh host", "sudo ls", "git push", "git checkout main",
+        "git stash", "git fetch", "git add .", "awk '{print $1}'", "sed -n s/a/b/ f",
+        "xargs rm", "env FOO=1", "find . -exec rm {} ;", "find . -delete",
+        "find . -execdir touch x", "", "   ", "x".repeat(2001), "julia run.jl",
+        "cd src && julia run.jl", "find . '-delete'", 'find . "-exec" rm -rf {} \\;',
+        "find . -\\delete", "find . -e'xec' rm {} \\;", "find . -{d,d}elete",
+        'find . "-execdir" id \\;', 'find . "-ok" rm {} \\;', 'find . "-fprint" /tmp/x',
+        "find . -delete # comment", "sort -o /tmp/x /tmp/in", "sort -o=/tmp/x",
+        "sort -o/tmp/x", "sort --output /tmp/x", "sort --output=/tmp/x",
+        'yq -i ".x = 1" f.yaml', "yq -i=true", 'yq --inplace ".x = 1" f.yaml',
+        "yq --inplace", "git diff --output=/tmp/x HEAD~1 HEAD", "git log --output=/tmp/x -1",
+        "git ls-remote origin", "git ls-remote", "git diff https://example.com/x",
+        "git log git@github.com:x/y", "sort -o ~/.ssh/authorized_keys /dev/null",
+        "cat ~/x", "cd ~", "sort -o /tmp/x f | head", "rg --pre /bin/bash needle PLAN.md",
+        "rg --pre=bash needle PLAN.md", "rg --pre='cat' needle PLAN.md",
+        "rg '--pre' /bin/bash needle PLAN.md", 'rg "--pre" /bin/bash needle PLAN.md',
+        "rg --p're' /bin/bash needle PLAN.md", "rg --pre-glob '*.md' --pre /bin/bash needle PLAN.md",
+        "rg --p{re,re}=/bin/bash needle PLAN.md", "rg --pager less needle PLAN.md",
+        "rg --pager='less' needle PLAN.md", "sort --compress-program=/bin/bash big.txt",
+        "sort --compress-program /bin/bash big.txt", "sort '--compress-program'=/bin/bash big.txt",
+        'sort "--compress-program=/bin/bash" big.txt', "sort --compress-{,}program=/bin/bash big.txt",
+        "sort --{compress-,compress-}program=/bin/bash big.txt", "sort '-o' /tmp/pwn PLAN.md",
+        'sort "-o" /tmp/pwn PLAN.md', "sort -'o' /tmp/pwn PLAN.md",
+        "sort --'output' /tmp/pwn PLAN.md", "yq '-i' .x=1 f.yaml",
+        "git diff '--output=/tmp/pwn' HEAD~1 HEAD", "git log --'output'=/tmp/pwn -1",
+        "git log --outp\\ut=/tmp/pwn -1", "git log 'https://evil.com/x'",
+        "git grep -Otouch needle", "git grep -O touch needle", "git grep -O/bin/bash needle",
+        "git grep --open-files-in-pager=touch needle", "git grep --open-files-in-pager touch needle",
+        "git grep -O'touch /tmp/pwn' needle", 'git grep -O"touch /tmp/pwn" needle',
+        "git grep --open-files-in-pager='touch ../x' needle",
+        "git grep -n -O'touch /tmp/pwn' needle", "git grep -O'touch /tmp/pwn' -n needle",
+        "git grep -Otouch needle | head", "uniq PLAN.md /home/x/.bashrc", "uniq in out",
+        "uniq -c in out", "uniq -f 2 in out", "uniq -f2 in out", "uniq --skip-fields=2 in out",
+        "uniq --skip-fields 2 in out", "uniq -- PLAN.md out", "uniq in out | head",
+        "git symbolic-ref HEAD refs/heads/pwned",
+        "git symbolic-ref refs/remotes/origin/HEAD refs/heads/x",
+        "git symbolic-ref -m reason HEAD refs/heads/x",
+        "git symbolic-ref --reason reason HEAD refs/heads/x",
+        "git symbolic-ref -mreason HEAD refs/heads/x", "git symbolic-ref HEAD refs/heads/x | head",
+        "git symbolic-ref --delete HEAD", "tree -o /tmp/listing.txt .", "tree -o/tmp/listing.txt .",
+        "tree --output-file=/tmp/listing.txt .", "tree -o ~/.bashrc .",
+        "less -o /tmp/lesslog.txt file", "less -O/tmp/lesslog.txt file",
+        "less --log-file=/tmp/lesslog.txt file", "less --LOG-FILE=/tmp/lesslog.txt file",
+        "bat --pager less file"]
+        .map((cmd) => ({ cmd, expect: false })),
+      // profile-extra corpus
+      { cmd: "julia run.jl", extra: ["julia"], expect: true },
+      { cmd: "julia s.jl | head", extra: ["julia"], expect: true },
+      { cmd: "cd src && julia run.jl", extra: ["julia"], expect: true },
+      { cmd: "grep x f | julia", extra: ["julia"], expect: true },
+      { cmd: "julia run.jl && rm -rf /", extra: ["julia"], expect: false },
+      { cmd: "julia run.jl; ls", extra: ["julia"], expect: false },
+    ];
+    for (const { cmd, extra, expect } of corpus) {
+      assert.equal(
+        isSafeCommand(cmd, extra),
+        checkSafeCommand(cmd, extra).ok,
+        `parity for ${JSON.stringify(cmd)}`,
+      );
+      assert.equal(checkSafeCommand(cmd, extra).ok, expect, `verdict for ${JSON.stringify(cmd)}`);
+    }
   });
 });
 

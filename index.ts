@@ -34,12 +34,12 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import {
   buildWidgetLines,
   buildPlanModeTools,
+  bashBlockReason,
   describePlanModeBashRules,
   describeProfileGrants,
   expandToolEntry,
   getPlanFilePath,
   isAllowedWritePath,
-  isSafeCommand,
   isSymlink,
   loadConfig,
   PLAN_TEMPLATE,
@@ -604,14 +604,9 @@ export default function (pi: ExtensionAPI): void {
     // actually exists.
 
     if (isToolCallEventType("bash", event)) {
-      if (!isSafeCommand(event.input.command, activeProfile?.bash)) {
-        return {
-          block: true,
-          reason:
-            `[${label}] Command blocked — plan mode only allows read-only commands (and profile-approved commands).\n` +
-            `Blocked: ${event.input.command}\n` +
-            `Run /plan to leave plan mode, or /plan go to execute the plan with full access.`,
-        };
+      const reason = bashBlockReason(event.input.command, activeProfile?.bash, label);
+      if (reason !== null) {
+        return { block: true, reason };
       }
       return;
     }
