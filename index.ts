@@ -85,10 +85,11 @@ export default function (pi: ExtensionAPI): void {
   /** Thinking level captured on entry, restored when plan mode turns off. */
   let savedThinkingLevel: ThinkingLevel | undefined;
   /**
-   * Plan content at the start of the last planning round (in-memory only). The
-   * viewer diffs this against the current file to highlight last-round edits.
-   * Refreshed each round in `before_agent_start`; advanced past manual
-   * edits/clears so they are not shown as agent changes.
+   * Plan content captured at the end of the previous planning round (in-memory
+   * only). The viewer diffs this against the current file to highlight the last
+   * round's edits. Set in `agent_end` after each round — so the FIRST round has
+   * no baseline and is never highlighted; advanced past manual edits/clears so
+   * they are not shown as agent changes.
    */
   let lastRoundBefore: string | undefined;
   /** sourceInfo.source of the tools THIS extension registers (plan_clear). */
@@ -741,14 +742,6 @@ export default function (pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (_event, ctx) => {
     if (!planModeEnabled) return;
     const planFile = currentPlanFilePath(ctx.cwd);
-    // Baseline for the "last round" diff: the plan as it stands at the start of
-    // this round, before any edits within it. The viewer diffs this against the
-    // file's content when it is opened.
-    try {
-      lastRoundBefore = readFileSync(planFile, "utf8");
-    } catch {
-      lastRoundBefore = PLAN_TEMPLATE;
-    }
     return {
       message: {
         customType: CONTEXT_CUSTOM_TYPE,
@@ -794,9 +787,18 @@ export default function (pi: ExtensionAPI): void {
   /* Turn lifecycle                                                    */
   /* ---------------------------------------------------------------- */
 
-  // Refresh the plan widget after each agent run so it reflects the file.
+  // Refresh the plan widget after each agent run so it reflects the file, and
+  // capture the post-round content as the baseline for the NEXT round's diff.
+  // (Baseline is set at agent_end — not before the first round — so the first
+  // planning round is never highlighted as a diff.)
   pi.on("agent_end", async (_event, ctx) => {
     if (!planModeEnabled) return;
+    const planFile = currentPlanFilePath(ctx.cwd);
+    try {
+      lastRoundBefore = readFileSync(planFile, "utf8");
+    } catch {
+      lastRoundBefore = PLAN_TEMPLATE;
+    }
     refreshPlanWidget(ctx);
   });
 

@@ -120,7 +120,7 @@ export class PlanViewer implements Component, Focusable {
     // The last-round diff is the default view when one exists; otherwise the
     // rendered plan. diffBefore is undefined (no prior round) or equals content
     // (no change) → plain rendered view.
-    this.diffLines = diffBefore !== undefined ? diffPlanLines(diffBefore, content, theme) : [];
+    this.diffLines = diffBefore !== undefined ? diffPlanLines(diffBefore, content, this.theme) : [];
     this.diffCounts = countChanges(this.diffLines);
     this.mode = hasChanges(this.diffLines) ? "diff" : "view";
     this.editor = new Editor(buildViewportTui(tui, () => this.editorRows.value), editorTheme);
