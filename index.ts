@@ -96,13 +96,21 @@ export default function (pi: ExtensionAPI): void {
   /** Thinking level captured on entry, restored when plan mode turns off. */
   let savedThinkingLevel: ThinkingLevel | undefined;
   /**
-   * Plan content captured at the end of the previous planning round (in-memory
-   * only). The viewer diffs this against the current file to highlight the last
-   * round's edits. Set in `agent_end` after each round — so the FIRST round has
-   * no baseline and is never highlighted; advanced past manual edits/clears so
-   * they are not shown as agent changes.
+   * Plan content at the start of the last planning round (in-memory only). The
+   * viewer diffs this against the current file to highlight the last round's
+   * edits. Captured in `before_agent_start` only when `hasRoundBaseline` is
+   * set — so the FIRST round has no baseline and is never highlighted;
+   * advanced past manual edits/clears so they are not shown as agent changes.
    */
   let lastRoundBefore: string | undefined;
+  /**
+   * True once at least one planning round has completed. Gates the baseline
+   * capture in `before_agent_start` so the very first round (and any round on
+   * a freshly-cleared or freshly-selected plan file) has no "before" and is
+   * never highlighted as a diff. Set at `agent_end`; cleared by `/plan clear`
+   * and `/plan file`; set by a manual viewer save.
+   */
+  let hasRoundBaseline = false;
   /** sourceInfo.source of the tools THIS extension registers (plan_clear). */
   const ownToolSources = new Map<string, string>();
 
@@ -472,9 +480,11 @@ export default function (pi: ExtensionAPI): void {
           return;
         }
         writeFileSync(planFile, PLAN_TEMPLATE, "utf8");
-        // A reset is not an agent round: advance the baseline so no stale
-        // "last round" diff is shown for the fresh template.
-        lastRoundBefore = PLAN_TEMPLATE;
+        // A reset is not an agent round and the template is a fresh start:
+        // clear the baseline entirely so neither the stale plan nor the next
+        // round is shown as a "last round" diff.
+        lastRoundBefore = undefined;
+        hasRoundBaseline = false;
         if (planModeEnabled) refreshPlanWidget(ctx);
         ctx.ui.notify(`Plan reset: ${planFile}`, "info");
         return;
@@ -515,8 +525,10 @@ export default function (pi: ExtensionAPI): void {
         const name = rest.join(" ").trim();
         if (name === "") {
           activePlanFile = undefined;
-          // Switching files invalidates the prior round's baseline.
+          // Switching files invalidates the prior round's baseline; the next
+          // round on this file is a "first" round and is not highlighted.
           lastRoundBefore = undefined;
+          hasRoundBaseline = false;
           ctx.ui.notify("Plan file reset to default.", "info");
           if (planModeEnabled) refreshPlanWidget(ctx);
           return;
@@ -530,8 +542,10 @@ export default function (pi: ExtensionAPI): void {
           return;
         }
         activePlanFile = name;
-        // New file, no prior round baseline yet.
+        // New file, no prior round baseline yet — the first round on it is
+        // a "first" round and is not highlighted.
         lastRoundBefore = undefined;
+        hasRoundBaseline = false;
         ctx.ui.notify(`Plan file set to ${name} (${resolved}).`, "info");
         if (planModeEnabled) refreshPlanWidget(ctx);
         return;
@@ -638,8 +652,10 @@ export default function (pi: ExtensionAPI): void {
     const planFile = ensurePlanFile(ctx.cwd);
     await openPlanViewer(ctx, planFile, lastRoundBefore, (text) => {
       // A manual viewer save is not an agent round: advance the baseline so
-      // the manual edit is not shown as a "last round" change.
+      // the manual edit is not shown as a "last round" change, and mark that
+      // a baseline now exists so the next round's start captures it.
       lastRoundBefore = text;
+      hasRoundBaseline = true;
       if (planModeEnabled) refreshPlanWidget(ctx);
       ctx.ui.notify("Plan updated.", "info");
     });
@@ -827,6 +843,17 @@ export default function (pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (_event, ctx) => {
     if (!planModeEnabled) return;
     const planFile = currentPlanFilePath(ctx.cwd);
+    // Baseline for the "last round" diff: the plan as it stands at the start
+    // of this round, before any edits within it. The viewer diffs this against
+    // the file's content when it is opened. Captured only once a prior round
+    // has completed, so the first round is never highlighted as a diff.
+    if (hasRoundBaseline) {
+      try {
+        lastRoundBefore = readFileSync(planFile, "utf8");
+      } catch {
+        lastRoundBefore = PLAN_TEMPLATE;
+      }
+    }
     return {
       message: {
         customType: CONTEXT_CUSTOM_TYPE,
@@ -882,17 +909,14 @@ export default function (pi: ExtensionAPI): void {
   /* ---------------------------------------------------------------- */
 
   // Refresh the plan widget after each agent run so it reflects the file, and
-  // capture the post-round content as the baseline for the NEXT round's diff.
-  // (Baseline is set at agent_end — not before the first round — so the first
-  // planning round is never highlighted as a diff.)
+  // mark that a round has completed so the NEXT round's start captures a
+  // baseline. (The baseline must be the pre-edit content of the round being
+  // diffed — captured in before_agent_start — NOT the post-round content; a
+  // post-round capture here would equal the file when the viewer opens and
+  // the diff would always be empty, the 5495c9b regression.)
   pi.on("agent_end", async (_event, ctx) => {
     if (!planModeEnabled) return;
-    const planFile = currentPlanFilePath(ctx.cwd);
-    try {
-      lastRoundBefore = readFileSync(planFile, "utf8");
-    } catch {
-      lastRoundBefore = PLAN_TEMPLATE;
-    }
+    hasRoundBaseline = true;
     refreshPlanWidget(ctx);
   });
 
