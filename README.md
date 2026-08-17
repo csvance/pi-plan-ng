@@ -47,9 +47,11 @@ thinking the planner puts into each turn.
 **Unsafe plan mode for unrestricted planning.**
 
 - `/plan unsafe` keeps the planning loop but disables every restriction:
-  the full tool set, unrestricted bash, and writes anywhere. For a trusted
-  single session planning a complex task — where the read-only gates would
-  block legitimate research like builds, tests, or throwaway experiments.
+  the full tool set, unrestricted bash, and writes anywhere. The injected
+  prompt tells the agent to keep the repo read-only (only the plan file may
+  be written) — soft guidance, nothing enforces it. For a trusted single
+  session planning a complex task, where the read-only gates would block
+  legitimate research like builds, tests, or validation commands.
 - `/plan safe` re-enables the restrictions; start pi already unsafe with
   `pi --plan-unsafe`.
 
@@ -69,7 +71,7 @@ checklist step becomes a tracked **todo**. See
 
 ```bash
 pi install https://github.com/csvance/pi-plan-ng
-# pin a version with a tag: pi install https://github.com/csvance/pi-plan-ng@v0.2.0
+# pin a version with a tag: pi install https://github.com/csvance/pi-plan-ng@v0.2.1
 ```
 
 Requires Node ≥ 18. Or point pi at a local checkout (live reference — edits
@@ -234,15 +236,20 @@ never a parallel re-implementation, so it cannot drift from enforcement.
 `/plan unsafe` turns on plan mode with **every restriction disabled**:
 the full tool set, unrestricted bash (any command), and `edit`/`write` on
 any path. The planning loop stays — the agent researches, updates the plan
-file, and reports each round — but no gate stops it, so it can run real
-commands (builds, tests, throwaway experiments in `.scratch/`) while it
-validates the plan.
+file, and reports each round — but no gate stops it. The injected prompt
+tells the agent to treat the repo as **read-only**: no source edits, no
+new files, no deletions, no build artifacts — the plan file is the only
+file it may write. Unrestricted bash is still there for validation
+(builds, tests, dry-run checks); if the agent needs ephemeral scratch, the
+side effects belong **outside the repo** (e.g. `/tmp`) and the agent
+cleans them up.
 
 This is for **trusted, single-session planning**: one agent acting in the
 repo at a time, driven interactively, where the read-only gates would
-block legitimate research. The injected prompt spells out that the plan is
-the deliverable and implementation is `/plan go`'s job — but nothing
-enforces it; staying in the planning loop is on the agent (and you).
+block legitimate research. The injected prompt spells out that the repo is
+read-only while planning, that the plan is the deliverable, and that
+implementation is `/plan go`'s job — but nothing enforces it; staying in
+the planning loop is on the agent (and you).
 
 - `/plan unsafe` — enter unsafe plan mode, or switch to it while already
   planning.
@@ -250,6 +257,10 @@ enforces it; staying in the planning loop is on the agent (and you).
   Bare `/plan` exits plan mode entirely.
 - `pi --plan-unsafe` — start pi already in unsafe plan mode.
 - `/plan status` shows `ON — UNSAFE` while active.
+
+Unsafe mode is part of plan mode's persisted session state, so it resumes
+across session restarts (including on a plain `pi` relaunch) like the
+rest of that state.
 
 Unsafe mode and profiles are alternative ways to widen plan mode's tool
 access and don't combine: `/plan unsafe` clears the active profile, and

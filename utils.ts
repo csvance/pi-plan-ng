@@ -706,7 +706,12 @@ export function describeUnsafePlanMode(): string {
     "- Every tool is available (read, grep, find, ls, bash, edit, write, web_search, todo, plan_clear, and any MCP/extension tools).",
     "- bash runs ANY command — no read-only allowlist, no deny rules, nothing is blocked.",
     "- edit/write work on ANY path — nothing is restricted to the plan file.",
-    "You are trusted to use this full access responsibly while planning: run builds, tests, or throwaway experiments (e.g. in .scratch/) to validate the plan. The gate will NOT stop you — staying in the planning loop is on you: the plan is the deliverable, not implementation.",
+    "",
+    "DESPITE THE UNRESTRICTED ACCESS, THE PROJECT IS READ-ONLY WHILE YOU PLAN. Do NOT write or delete anything in it:",
+    "- No source edits, no new files, no deletions or renames, no build artifacts, no stray files of any kind.",
+    "- Only ONE file may be created or modified: the plan file. Everything else in the repo stays exactly as you found it.",
+    "If you genuinely need ephemeral scratch space to validate something, put its side effects OUTSIDE the repo (e.g. under /tmp), and clean them up yourself when done — prefer read-only validation (e.g. git diff, tsc --noEmit, dry-run flags) whenever it suffices.",
+    "The gate will NOT stop you — staying in the planning loop is on you: research → plan → refine, and the plan is the deliverable, not implementation. Executing the plan's steps is /plan go's job, not yours.",
   ].join("\n");
 }
 

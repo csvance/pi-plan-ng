@@ -636,6 +636,16 @@ describe("describeUnsafePlanMode", () => {
     assert.match(text, /The gate will NOT stop you/);
     assert.match(text, /the plan is the deliverable, not implementation/);
   });
+
+  it("tells the agent the repo is read-only (soft guidance, no enforcement)", () => {
+    const text = describeUnsafePlanMode();
+    assert.match(text, /THE PROJECT IS READ-ONLY WHILE YOU PLAN/);
+    assert.match(text, /Do NOT write or delete anything/);
+    assert.match(text, /Only ONE file may be created or modified: the plan file/);
+    // ephemeral scratch is allowed only OUTSIDE the repo, with cleanup
+    assert.match(text, /OUTSIDE the repo/);
+    assert.ok(!text.includes(".scratch/"), ".scratch/ is a repo write — must not be offered as scratch space");
+  });
 });
 
 describe("theme builders", () => {

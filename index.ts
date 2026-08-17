@@ -24,9 +24,9 @@
  * `/plan unsafe` enters plan mode with every restriction DISABLED — all
  * tools, unrestricted bash, writes anywhere — for a trusted single
  * session planning a complex task (one agent in the repo at a time).
- * The planning loop stays; only the gates go away. `/plan safe` (or bare
- * `/plan`) returns to restricted plan mode; unsafe and profiles don't
- * combine (see /plan unsafe).
+ * The planning loop stays; only the gates go away. `/plan safe` returns
+ * to restricted plan mode; bare `/plan` exits plan mode entirely. Unsafe
+ * and profiles don't combine (see /plan unsafe).
  * `/plan file <name>` picks this session's plan file (default PLAN.md),
  * so multiple agents in the same repo can plan in parallel without
  * stepping on each other; `/plan file` with no name resets to the default.
@@ -546,11 +546,7 @@ export default function (pi: ExtensionAPI): void {
       if (action === "unsafe") {
         ensurePlanFile(ctx.cwd);
         const wasOn = planModeEnabled;
-        const ok = enablePlanMode(ctx, undefined, true);
-        if (!ok) {
-          ctx.ui.notify("Could not enter unsafe plan mode.", "warning");
-          return;
-        }
+        enablePlanMode(ctx, undefined, true);
         ctx.ui.notify(
           [
             wasOn && planModeUnsafe
@@ -558,7 +554,7 @@ export default function (pi: ExtensionAPI): void {
               : wasOn
                 ? "Switched to UNSAFE plan mode — all restrictions disabled."
                 : "Plan mode on (UNSAFE) — all restrictions disabled.",
-            "Every tool, unrestricted bash, and writes anywhere. The gate will not stop you — stay in the planning loop.",
+            "Every tool, unrestricted bash, and writes anywhere are enabled — but keep the repo read-only and stay in the planning loop; the gate will not stop you.",
           ].join("\n"),
           "warning",
         );
@@ -569,6 +565,10 @@ export default function (pi: ExtensionAPI): void {
       // restricted plan mode from outside). The inverse of /plan unsafe.
       if (action === "safe") {
         ensurePlanFile(ctx.cwd);
+        if (planModeEnabled && !planModeUnsafe) {
+          ctx.ui.notify("Already in restricted plan mode.", "info");
+          return;
+        }
         const wasUnsafe = planModeUnsafe;
         enablePlanMode(ctx);
         ctx.ui.notify(
@@ -833,7 +833,7 @@ export default function (pi: ExtensionAPI): void {
         content: [
           planModeUnsafe ? "[PLAN MODE ACTIVE — UNSAFE]" : "[PLAN MODE ACTIVE]",
           planModeUnsafe
-            ? "You are in PLAN MODE: you research and write a plan; you do NOT implement the plan's steps yet."
+            ? "You are in PLAN MODE: you research and write a plan; you do NOT implement the plan's steps yet. Do NOT write or delete anything in the project except the plan file — the repo is read-only while you plan."
             : "You are in PLAN MODE: you research and write a plan; you do NOT implement anything.",
           "",
           `Plan file: ${planFile} — the source of truth. The UI shows a one-line plan status; ${TOGGLE_KEY} opens the full plan viewer (rendered markdown — scroll, and press e to edit).`,
@@ -859,7 +859,7 @@ export default function (pi: ExtensionAPI): void {
           "",
           "Working loop, per user message:",
           "1. First, tell the user in ONE short line what you are updating in the plan and why.",
-          "2. Read the plan file, then update it with edit/write" + (planModeUnsafe ? "" : " (only the plan file may be written)") + ".",
+          "2. Read the plan file, then update it with edit/write" + (planModeUnsafe ? " (the ONLY file you may create or modify)" : " (only the plan file may be written)") + ".",
           "3. Reply with a brief summary of the change and what is still open.",
           "",
           "Guidelines:",
@@ -867,7 +867,7 @@ export default function (pi: ExtensionAPI): void {
           "- Structure the plan with concrete checklist steps (- [ ]): at execution time (/plan go) each step becomes a todo that tracks progress.",
           "- Research first (read files" + (hasWebSearchTool() ? ", web_search" : "") + "), then write.",
           ...(planModeUnsafe
-            ? ["- Use the unrestricted tools for RESEARCH and validation only (builds, tests, throwaway experiments in .scratch/) — do NOT start implementing the plan's steps; that is /plan go's job."]
+            ? ["- Use the unrestricted tools for RESEARCH and validation only — and keep the repo untouched: no source edits, no new files, no deletions, no build artifacts (ephemeral scratch belongs outside the repo, e.g. /tmp). Do NOT start implementing the plan's steps; that is /plan go's job."]
             : []),
           "- If the user's request clearly starts an ENTIRELY NEW task unrelated to the current plan, call plan_clear (it asks the user to confirm) instead of editing the existing plan in place.",
           "- If the user asks you to do real work, remind them to run /plan go to execute the plan.",
@@ -973,8 +973,16 @@ export default function (pi: ExtensionAPI): void {
           "warning",
         );
       }
-      activeProfileName = canonicalName;
-      activeProfile = profile;
+      // Unsafe mode and profiles are mutually exclusive; a profile restored
+      // from a previous session must not survive into unsafe mode (mirrors
+      // enablePlanMode's unsafe branch).
+      if (planModeUnsafe) {
+        activeProfileName = undefined;
+        activeProfile = undefined;
+      } else {
+        activeProfileName = canonicalName;
+        activeProfile = profile;
+      }
       warnUnknownProfileTools(ctx, canonicalName, profile);
       if (toolsBeforePlanMode === undefined) toolsBeforePlanMode = pi.getActiveTools();
       pi.setActiveTools(planModeUnsafe ? allTools() : planModeTools());
