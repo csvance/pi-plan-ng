@@ -71,7 +71,7 @@ checklist step becomes a tracked **todo**. See
 
 ```bash
 pi install https://github.com/csvance/pi-plan-ng
-# pin a version with a tag: pi install https://github.com/csvance/pi-plan-ng@v0.2.1
+# pin a version with a tag: pi install https://github.com/csvance/pi-plan-ng@v0.2.2
 ```
 
 Requires Node ≥ 18. Or point pi at a local checkout (live reference — edits
