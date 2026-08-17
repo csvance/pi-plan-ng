@@ -44,6 +44,15 @@ thinking the planner puts into each turn.
   already in profile mode with `pi --plan-profile <name>`.
 - Everything not explicitly granted by the active profile stays blocked.
 
+**Unsafe plan mode for unrestricted planning.**
+
+- `/plan unsafe` keeps the planning loop but disables every restriction:
+  the full tool set, unrestricted bash, and writes anywhere. For a trusted
+  single session planning a complex task — where the read-only gates would
+  block legitimate research like builds, tests, or throwaway experiments.
+- `/plan safe` re-enables the restrictions; start pi already unsafe with
+  `pi --plan-unsafe`.
+
 **Configurable thinking effort.**
 
 - `"reasoningEffort"` sets the thinking level for planning turns
@@ -60,7 +69,7 @@ checklist step becomes a tracked **todo**. See
 
 ```bash
 pi install https://github.com/csvance/pi-plan-ng
-# pin a version with a tag: pi install https://github.com/csvance/pi-plan-ng@v0.1.0
+# pin a version with a tag: pi install https://github.com/csvance/pi-plan-ng@v0.2.0
 ```
 
 Requires Node ≥ 18. Or point pi at a local checkout (live reference — edits
@@ -86,13 +95,15 @@ pi install @juicesharp/rpiv-todo
 | ------ | ------------- |
 | Enter / exit plan mode | `/plan` (toggles) |
 | Plan mode with a profile (e.g. julia) | `/plan julia` |
+| Plan mode with every restriction disabled (UNSAFE) | `/plan unsafe` |
+| Back to restricted plan mode | `/plan safe` |
 | Open the plan in the full-screen viewer (`e` toggles editing) | `Alt+O` or `/plan open` |
 | Execute the plan (exit plan mode + full tools) | `/plan go` |
 | Pick this session's plan file (e.g. `PLAN2.md`) | `/plan file PLAN2.md` |
 | Reset the plan file to the default | `/plan file` |
 | Reset the plan file (asks for confirmation) | `/plan clear` |
 | Show state (mode, profile, effort, todos) | `/plan status` |
-| Start pi already in plan mode | `pi --plan`, `pi --plan-profile <name>`, or `pi --plan-file <name>` |
+| Start pi already in plan mode | `pi --plan`, `pi --plan-unsafe`, `pi --plan-profile <name>`, or `pi --plan-file <name>` |
 
 ### The loop
 
@@ -188,8 +199,8 @@ above with a writable notebook directory:
   the plan file (relative to the project root).
 
 `/plan <name>` enters plan mode with that profile (or switches to it if
-already planning); built-in subcommands (`go`, `clear`, `status`, `open`)
-take precedence over profile names.
+already planning); built-in subcommands (`go`, `clear`, `status`, `open`,
+`unsafe`, `safe`) take precedence over profile names.
 
 > **Security:** profiles deliberately relax plan-mode guarantees — a
 > profile bash command like `julia` is arbitrary execution. Treat profiles
@@ -217,6 +228,32 @@ git subcommands, or noting the action in the plan for `/plan go`) — so
 the next attempt is more likely to be legal. The explanation comes from
 the same code that decides allow/deny (`checkSafeCommand` in `utils.ts`),
 never a parallel re-implementation, so it cannot drift from enforcement.
+
+### Unsafe plan mode
+
+`/plan unsafe` turns on plan mode with **every restriction disabled**:
+the full tool set, unrestricted bash (any command), and `edit`/`write` on
+any path. The planning loop stays — the agent researches, updates the plan
+file, and reports each round — but no gate stops it, so it can run real
+commands (builds, tests, throwaway experiments in `.scratch/`) while it
+validates the plan.
+
+This is for **trusted, single-session planning**: one agent acting in the
+repo at a time, driven interactively, where the read-only gates would
+block legitimate research. The injected prompt spells out that the plan is
+the deliverable and implementation is `/plan go`'s job — but nothing
+enforces it; staying in the planning loop is on the agent (and you).
+
+- `/plan unsafe` — enter unsafe plan mode, or switch to it while already
+  planning.
+- `/plan safe` — re-enable the restrictions while staying in plan mode.
+  Bare `/plan` exits plan mode entirely.
+- `pi --plan-unsafe` — start pi already in unsafe plan mode.
+- `/plan status` shows `ON — UNSAFE` while active.
+
+Unsafe mode and profiles are alternative ways to widen plan mode's tool
+access and don't combine: `/plan unsafe` clears the active profile, and
+`/plan <profile>` clears unsafe mode.
 
 ## Executing the plan
 

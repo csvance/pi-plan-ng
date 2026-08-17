@@ -21,6 +21,12 @@
  * `julia` bash command in a julia profile, or a `kaimon*` MCP tool set.
  * The config also accepts "reasoningEffort" to set the thinking level
  * used for planning turns (restored on exit).
+ * `/plan unsafe` enters plan mode with every restriction DISABLED — all
+ * tools, unrestricted bash, writes anywhere — for a trusted single
+ * session planning a complex task (one agent in the repo at a time).
+ * The planning loop stays; only the gates go away. `/plan safe` (or bare
+ * `/plan`) returns to restricted plan mode; unsafe and profiles don't
+ * combine (see /plan unsafe).
  * `/plan file <name>` picks this session's plan file (default PLAN.md),
  * so multiple agents in the same repo can plan in parallel without
  * stepping on each other; `/plan file` with no name resets to the default.
@@ -41,6 +47,7 @@ import {
   bashBlockReason,
   describePlanModeBashRules,
   describeProfileGrants,
+  describeUnsafePlanMode,
   expandToolEntry,
   getPlanFilePath,
   isAllowedWritePath,
@@ -60,6 +67,8 @@ const TOGGLE_KEY = "Alt+O";
 
 interface PlanModeState {
   enabled: boolean;
+  /** UNSAFE plan mode (`/plan unsafe`): every restriction disabled. */
+  unsafe?: boolean;
   toolsBeforePlanMode?: string[];
   /** Active profile name (undefined = default, no profile). */
   profile?: string;
@@ -72,6 +81,8 @@ type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
 
 export default function (pi: ExtensionAPI): void {
   let planModeEnabled = false;
+  /** UNSAFE plan mode (`/plan unsafe`): every restriction disabled. */
+  let planModeUnsafe = false;
   let toolsBeforePlanMode: string[] | undefined;
   let activeProfileName: string | undefined;
   let activeProfile: PlanModeProfile | undefined;
@@ -97,7 +108,8 @@ export default function (pi: ExtensionAPI): void {
 
   /** Gate label used in block reasons and status, e.g. "plan mode (julia)". */
   function modeLabel(): string {
-    return activeProfileName ? `plan mode (${activeProfileName})` : "plan mode";
+    if (activeProfileName) return `plan mode (${activeProfileName})`;
+    return planModeUnsafe ? "plan mode (unsafe)" : "plan mode";
   }
 
   /**
@@ -111,6 +123,14 @@ export default function (pi: ExtensionAPI): void {
     if (available.has("web_search")) base.push("web_search");
     const { tools } = buildPlanModeTools(base, activeProfile, available);
     return tools;
+  }
+
+  /**
+   * Every tool pi currently provides — the unrestricted tool set used by
+   * UNSAFE plan mode (`/plan unsafe`). Same tool surface as plan mode off.
+   */
+  function allTools(): string[] {
+    return pi.getAllTools().map((t) => t.name);
   }
 
   function hasWebSearchTool(): boolean {
@@ -144,6 +164,12 @@ export default function (pi: ExtensionAPI): void {
     default: "",
   });
 
+  pi.registerFlag("plan-unsafe", {
+    description: "Start in plan mode with ALL restrictions disabled (UNSAFE: every tool, unrestricted bash, writes anywhere)",
+    type: "boolean",
+    default: false,
+  });
+
   /* ---------------------------------------------------------------- */
   /* Helpers                                                           */
   /* ---------------------------------------------------------------- */
@@ -151,6 +177,7 @@ export default function (pi: ExtensionAPI): void {
   function persistState(): void {
     pi.appendEntry(STATE_CUSTOM_TYPE, {
       enabled: planModeEnabled,
+      unsafe: planModeUnsafe,
       toolsBeforePlanMode,
       profile: activeProfileName,
       planFile: activePlanFile,
@@ -160,7 +187,9 @@ export default function (pi: ExtensionAPI): void {
   function updateStatus(ctx: ExtensionContext): void {
     ctx.ui.setStatus(
       "plan-mode",
-      planModeEnabled ? ctx.ui.theme.fg("warning", `⏸ plan${activeProfileName ? `·${activeProfileName}` : ""}`) : undefined,
+      planModeEnabled
+        ? ctx.ui.theme.fg("warning", `⏸ plan${activeProfileName ? `·${activeProfileName}` : planModeUnsafe ? "·unsafe" : ""}`)
+        : undefined,
     );
   }
 
@@ -273,14 +302,23 @@ export default function (pi: ExtensionAPI): void {
    * leaves plan mode off) when the profile is unknown. Warns about profile
    * tools that do not exist in the current tool set.
    */
-  function enablePlanMode(ctx: ExtensionContext, profileName?: string): boolean {
+  function enablePlanMode(ctx: ExtensionContext, profileName?: string, unsafe = false): boolean {
     const { canonicalName, profile } = resolveProfile(ctx, profileName);
     if (profileName && !profile) return false;
     if (toolsBeforePlanMode === undefined) toolsBeforePlanMode = pi.getActiveTools();
-    activeProfileName = canonicalName;
-    activeProfile = profile;
+    // UNSAFE and profiles are alternative ways to widen plan mode's tool
+    // access and don't combine: unsafe already allows everything, so a
+    // profile under it would be meaningless (and its label misleading).
+    if (unsafe) {
+      activeProfileName = undefined;
+      activeProfile = undefined;
+    } else {
+      activeProfileName = canonicalName;
+      activeProfile = profile;
+    }
+    planModeUnsafe = unsafe;
     warnUnknownProfileTools(ctx, canonicalName, profile);
-    pi.setActiveTools(planModeTools());
+    pi.setActiveTools(unsafe ? allTools() : planModeTools());
     planModeEnabled = true;
     applyThinkingEffort(ctx);
     persistState();
@@ -291,6 +329,7 @@ export default function (pi: ExtensionAPI): void {
 
   function disablePlanMode(ctx: ExtensionContext): void {
     planModeEnabled = false;
+    planModeUnsafe = false;
     activeProfileName = undefined;
     activeProfile = undefined;
     pi.setActiveTools(toolsBeforePlanMode ?? pi.getActiveTools());
@@ -332,7 +371,7 @@ export default function (pi: ExtensionAPI): void {
     description:
       "Toggle plan mode. Subcommands: go (execute plan), clear (reset plan), file <name> (pick this session's plan file), status, open. A profile name enters plan mode with that profile.",
     getArgumentCompletions: (prefix: string) => {
-      const builtins = ["go", "clear", "status", "open", "file"];
+      const builtins = ["go", "clear", "status", "open", "file", "unsafe", "safe"];
       const profiles = Object.keys(loadConfig(process.cwd()).profiles ?? {});
       const out = [...builtins, ...profiles]
         .filter((a) => a.startsWith(prefix))
@@ -450,7 +489,7 @@ export default function (pi: ExtensionAPI): void {
         const customFile = activePlanFile !== undefined;
         ctx.ui.notify(
           [
-            `Plan mode: ${planModeEnabled ? "ON" : "OFF"}`,
+            `Plan mode: ${planModeEnabled ? (planModeUnsafe ? "ON — UNSAFE (all restrictions disabled)" : "ON") : "OFF"}`,
             `Profile: ${activeProfileName ?? "none (default)"}${activeDesc}`,
             ...(activeGrants.length ? [`Grants: ${activeGrants.join("; ")}`] : []),
             `Available profiles: ${profileNames.length > 0 ? profileNames.join(", ") : "(none)"}`,
@@ -495,6 +534,49 @@ export default function (pi: ExtensionAPI): void {
         lastRoundBefore = undefined;
         ctx.ui.notify(`Plan file set to ${name} (${resolved}).`, "info");
         if (planModeEnabled) refreshPlanWidget(ctx);
+        return;
+      }
+
+      // UNSAFE plan mode: plan mode with EVERY restriction disabled —
+      // every tool, unrestricted bash, writes anywhere. The planning loop
+      // (research → plan → refine) stays; only the gates go away. For a
+      // trusted single session planning a complex task (one agent in the
+      // repo at a time), where the read-only gates would block legitimate
+      // research (builds, tests, throwaway experiments).
+      if (action === "unsafe") {
+        ensurePlanFile(ctx.cwd);
+        const wasOn = planModeEnabled;
+        const ok = enablePlanMode(ctx, undefined, true);
+        if (!ok) {
+          ctx.ui.notify("Could not enter unsafe plan mode.", "warning");
+          return;
+        }
+        ctx.ui.notify(
+          [
+            wasOn && planModeUnsafe
+              ? "Already in UNSAFE plan mode — all restrictions disabled."
+              : wasOn
+                ? "Switched to UNSAFE plan mode — all restrictions disabled."
+                : "Plan mode on (UNSAFE) — all restrictions disabled.",
+            "Every tool, unrestricted bash, and writes anywhere. The gate will not stop you — stay in the planning loop.",
+          ].join("\n"),
+          "warning",
+        );
+        return;
+      }
+
+      // Re-enable the restrictions while staying in plan mode (or enter
+      // restricted plan mode from outside). The inverse of /plan unsafe.
+      if (action === "safe") {
+        ensurePlanFile(ctx.cwd);
+        const wasUnsafe = planModeUnsafe;
+        enablePlanMode(ctx);
+        ctx.ui.notify(
+          wasUnsafe
+            ? "Back to restricted plan mode — read-only bash and plan-file writes apply again."
+            : "Plan mode on (restricted).",
+          "info",
+        );
         return;
       }
 
@@ -629,6 +711,9 @@ export default function (pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     if (!planModeEnabled) return;
+    // UNSAFE plan mode: every restriction is disabled — no tool, bash, or
+    // write gate applies. The injected prompt is the only guard.
+    if (planModeUnsafe) return;
     const label = modeLabel();
 
     // Provenance: name -> sourceInfo.source. Rebuilt on every call so
@@ -746,35 +831,44 @@ export default function (pi: ExtensionAPI): void {
       message: {
         customType: CONTEXT_CUSTOM_TYPE,
         content: [
-          "[PLAN MODE ACTIVE]",
-          "You are in PLAN MODE: you research and write a plan; you do NOT implement anything.",
+          planModeUnsafe ? "[PLAN MODE ACTIVE — UNSAFE]" : "[PLAN MODE ACTIVE]",
+          planModeUnsafe
+            ? "You are in PLAN MODE: you research and write a plan; you do NOT implement the plan's steps yet."
+            : "You are in PLAN MODE: you research and write a plan; you do NOT implement anything.",
           "",
           `Plan file: ${planFile} — the source of truth. The UI shows a one-line plan status; ${TOGGLE_KEY} opens the full plan viewer (rendered markdown — scroll, and press e to edit).`,
           ...(activeProfileName
             ? [`Profile: ${activeProfileName}${activeProfile?.description ? ` — ${activeProfile.description}` : ""}. Its extra tools, bash commands, and write paths are allowed in addition to the defaults.`]
             : []),
           "",
-          "Available tools:",
-          "- read, grep, find, ls — explore the codebase",
-          ...(hasWebSearchTool()
-            ? ["- web_search — external/up-to-date information (provided by pi or another extension)"]
-            : []),
-          "- bash — read-only only; see BASH RULES below (enforced by the gate — a blocked command never runs)",
-          "- edit, write — ONLY on the plan file",
-          "- plan_clear — reset the plan for a brand-new task (asks the user to confirm)",
-          "",
-          "BASH RULES (read-only allowlist):",
-          ...describePlanModeBashRules(activeProfile?.bash).split("\n"),
+          ...(planModeUnsafe
+            ? describeUnsafePlanMode().split("\n")
+            : [
+                "Available tools:",
+                "- read, grep, find, ls — explore the codebase",
+                ...(hasWebSearchTool()
+                  ? ["- web_search — external/up-to-date information (provided by pi or another extension)"]
+                  : []),
+                "- bash — read-only only; see BASH RULES below (enforced by the gate — a blocked command never runs)",
+                "- edit, write — ONLY on the plan file",
+                "- plan_clear — reset the plan for a brand-new task (asks the user to confirm)",
+                "",
+                "BASH RULES (read-only allowlist):",
+                ...describePlanModeBashRules(activeProfile?.bash).split("\n"),
+              ]),
           "",
           "Working loop, per user message:",
           "1. First, tell the user in ONE short line what you are updating in the plan and why.",
-          "2. Read the plan file, then update it with edit/write (only the plan file may be written).",
+          "2. Read the plan file, then update it with edit/write" + (planModeUnsafe ? "" : " (only the plan file may be written)") + ".",
           "3. Reply with a brief summary of the change and what is still open.",
           "",
           "Guidelines:",
           "- Keep the plan actionable: goal, constraints/context, concrete steps.",
           "- Structure the plan with concrete checklist steps (- [ ]): at execution time (/plan go) each step becomes a todo that tracks progress.",
           "- Research first (read files" + (hasWebSearchTool() ? ", web_search" : "") + "), then write.",
+          ...(planModeUnsafe
+            ? ["- Use the unrestricted tools for RESEARCH and validation only (builds, tests, throwaway experiments in .scratch/) — do NOT start implementing the plan's steps; that is /plan go's job."]
+            : []),
           "- If the user's request clearly starts an ENTIRELY NEW task unrelated to the current plan, call plan_clear (it asks the user to confirm) instead of editing the existing plan in place.",
           "- If the user asks you to do real work, remind them to run /plan go to execute the plan.",
         ].join("\n"),
@@ -818,6 +912,7 @@ export default function (pi: ExtensionAPI): void {
       ) as { data?: PlanModeState } | undefined;
     if (last?.data) {
       planModeEnabled = last.data.enabled ?? false;
+      planModeUnsafe = last.data.unsafe ?? false;
       toolsBeforePlanMode = last.data.toolsBeforePlanMode;
       activeProfileName = last.data.profile;
       // Restore the session-selected plan file, re-validated against the
@@ -835,13 +930,27 @@ export default function (pi: ExtensionAPI): void {
     }
 
     // Startup flags: --plan (boolean, plain plan mode),
-    // --plan-profile <name> (plan mode with a profile), and
+    // --plan-unsafe (plan mode with every restriction disabled),
+    // --plan-profile <name> (plan mode with a profile; ignored under
+    // --plan-unsafe, which already allows everything), and
     // --plan-file <name> (plan mode on a named plan file).
     if (pi.getFlag("plan") === true) planModeEnabled = true;
+    const unsafeFlag = pi.getFlag("plan-unsafe");
+    if (unsafeFlag === true) {
+      planModeEnabled = true;
+      planModeUnsafe = true;
+    }
     const profileFlag = pi.getFlag("plan-profile");
     if (typeof profileFlag === "string" && profileFlag !== "") {
-      planModeEnabled = true;
-      activeProfileName = profileFlag;
+      if (planModeUnsafe) {
+        ctx.ui.notify(
+          "[plan mode] --plan-profile ignored under --plan-unsafe (unsafe mode already allows every tool).",
+          "warning",
+        );
+      } else {
+        planModeEnabled = true;
+        activeProfileName = profileFlag;
+      }
     }
     const fileFlag = pi.getFlag("plan-file");
     if (typeof fileFlag === "string" && fileFlag !== "") {
@@ -868,7 +977,7 @@ export default function (pi: ExtensionAPI): void {
       activeProfile = profile;
       warnUnknownProfileTools(ctx, canonicalName, profile);
       if (toolsBeforePlanMode === undefined) toolsBeforePlanMode = pi.getActiveTools();
-      pi.setActiveTools(planModeTools());
+      pi.setActiveTools(planModeUnsafe ? allTools() : planModeTools());
       applyThinkingEffort(ctx);
       ensurePlanFile(ctx.cwd);
       updateStatus(ctx);

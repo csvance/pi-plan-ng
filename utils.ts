@@ -692,6 +692,24 @@ export function describePlanModeBashRules(extraCommands?: Iterable<string>): str
   return lines.join("\n");
 }
 
+/**
+ * The restrictions-disabled explanation injected into the agent prompt in
+ * UNSAFE plan mode (`/plan unsafe`). Unlike `describePlanModeBashRules`
+ * there are no rules to enumerate — the point is that EVERY gate is off —
+ * so this text sets expectations instead: full tool access is granted and
+ * staying in the planning loop is on the agent's own discipline (nothing
+ * will stop it from implementing early except the prompt).
+ */
+export function describeUnsafePlanMode(): string {
+  return [
+    "UNSAFE: all plan-mode restrictions are DISABLED.",
+    "- Every tool is available (read, grep, find, ls, bash, edit, write, web_search, todo, plan_clear, and any MCP/extension tools).",
+    "- bash runs ANY command — no read-only allowlist, no deny rules, nothing is blocked.",
+    "- edit/write work on ANY path — nothing is restricted to the plan file.",
+    "You are trusted to use this full access responsibly while planning: run builds, tests, or throwaway experiments (e.g. in .scratch/) to validate the plan. The gate will NOT stop you — staying in the planning loop is on you: the plan is the deliverable, not implementation.",
+  ].join("\n");
+}
+
 /* ------------------------------------------------------------------ */
 /* Config                                                              */
 /* ------------------------------------------------------------------ */

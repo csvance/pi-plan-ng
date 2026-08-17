@@ -11,6 +11,7 @@ import {
   buildWidgetLines,
   checkSafeCommand,
   describePlanModeBashRules,
+  describeUnsafePlanMode,
   expandToolEntry,
   getPlanFilePath,
   isAllowedWritePath,
@@ -610,6 +611,30 @@ describe("describePlanModeBashRules", () => {
     assert.match(rules, /Profile bash additions: julia, pluto/);
     const none = describePlanModeBashRules([]);
     assert.doesNotMatch(none, /Profile bash additions/);
+  });
+});
+
+describe("describeUnsafePlanMode", () => {
+  it("states that every restriction is disabled", () => {
+    const text = describeUnsafePlanMode();
+    assert.match(text, /all plan-mode restrictions are DISABLED/);
+    assert.match(text, /Every tool is available/);
+    assert.match(text, /bash runs ANY command/);
+    assert.match(text, /edit\/write work on ANY path/);
+  });
+
+  it("enumerates no allowlist or deny rules (there are none in unsafe mode)", () => {
+    const text = describeUnsafePlanMode();
+    assert.ok(!text.includes("SAFE BASH HEADS"));
+    assert.ok(!text.includes("DENIED EVEN ON ALLOWED HEADS"));
+    assert.ok(!text.includes("git subcommands"));
+    assert.ok(!text.includes("NEVER ALLOWED"));
+  });
+
+  it("puts staying in the planning loop on the agent (the gate will not stop it)", () => {
+    const text = describeUnsafePlanMode();
+    assert.match(text, /The gate will NOT stop you/);
+    assert.match(text, /the plan is the deliverable, not implementation/);
   });
 });
 
